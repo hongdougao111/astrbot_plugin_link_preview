@@ -138,13 +138,18 @@ def main() -> int:
             )
 
     push_cmd = [git, *SSH_BYPASS, "push", remote_url or "origin", tag]
-    r = run(push_cmd, check=False)
+    r = run(push_cmd, check=False, capture=True)
+    out_text = (r.stdout or "") + (r.stderr or "")
     if r.returncode != 0:
-        print("    推送失败，重试一次")
-        r = run(push_cmd, check=False)
-    if r.returncode != 0:
-        print(f"    还是没推上去。手动：{git} {' '.join(SSH_BYPASS)} push origin {tag}")
-        return 1
+        if "already exists" in out_text:
+            print("    远程已有这个标签，跳过推送")
+        else:
+            print(f"    推送失败，重试一次\n    {out_text.strip().splitlines()[-1] if out_text.strip() else ''}")
+            r = run(push_cmd, check=False, capture=True)
+            out_text = (r.stdout or "") + (r.stderr or "")
+            if r.returncode != 0 and "already exists" not in out_text:
+                print(f"    还是没推上去。手动：{git} {' '.join(SSH_BYPASS)} push origin {tag}")
+                return 1
     if not gh:
         print("    找不到 gh，跳过 Release 创建。标签已经推上去了。")
         return 0
