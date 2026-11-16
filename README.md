@@ -174,3 +174,31 @@ python scripts/release.py 1.1.0 --gh "E:/Apps/GitHub CLI/bin/gh.exe"
 ```
 
 `owner/repo` 也从 `origin` 的 URL 里推，https 和 ssh 两种写法都认，不写死仓库名。
+
+### 为什么 gh 老是「不能用」
+
+这台机器上：
+
+- 用户 PATH 里有个 `D:\dsh-tools\gh`，是**空目录**，而且不可写（指向不存在的卷）
+- 真正的 gh.exe 在 `E:\Apps\GitHub CLI\bin\`，这个目录不在任何 PATH 里
+- `gh` 的注册表项写不进去（`Requested registry access is not allowed`），所以改不了用户 PATH
+
+结果：`which gh` 永远找不到，但 gh 本身是好的（`gh auth status` 正常，账号 hongdougao111，
+token 带 repo 权限）。**不是 gh 坏了，是 PATH 里那条是死路。**
+
+每次开新窗口设一次：
+
+```bat
+scripts\\setup_env.bat
+```
+
+或者自己设：
+
+```bat
+set GH_PATH=E:\Apps\GitHub CLI\bin\gh.exe
+set GIT_PATH=C:\Users\<你>\PortableGit\cmd\git.exe
+```
+
+**GIT_PATH 那行为什么也要**：PATH 里的 git 是 dsh 自带的
+（`dsh-ops/shells/.../winuxcmd/usr/bin/git.exe`），它的 schannel 后端推 GitHub 报
+`SEC_E_NO_CREDENTIALS`。PortableGit 那个配 openssl 后端能用。
