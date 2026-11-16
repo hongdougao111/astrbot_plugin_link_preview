@@ -153,3 +153,24 @@ python scripts/release.py 1.1.0
 **为什么不用 git hook**：这台机器的 git for Windows 起不了 sh，
 报 `couldn't create signal pipe, Win32 error 5`，任何 shell 钩子都跑不起来。
 所以校验放进 `release.py`，发版必经此路。手动 `git push` 绕过去它管不着。
+
+### 找 gh / git 的顺序
+
+脚本里不写死路径，依次看三个来源：
+
+1. 命令行 `--gh <path>` / `--git <path>`
+2. 环境变量 `GH_PATH` / `GIT_PATH`
+3. `PATH`
+
+三个都没有就报错，让你自己去配，不猜。
+
+```bash
+# 环境变量方式（当前会话有效）
+export GH_PATH="E:/Apps/GitHub CLI/bin/gh.exe"
+python scripts/release.py 1.1.0
+
+# 或者每次显式给
+python scripts/release.py 1.1.0 --gh "E:/Apps/GitHub CLI/bin/gh.exe"
+```
+
+`owner/repo` 也从 `origin` 的 URL 里推，https 和 ssh 两种写法都认，不写死仓库名。
