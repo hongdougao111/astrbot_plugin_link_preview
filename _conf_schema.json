@@ -209,5 +209,17 @@
     "type": "bool",
     "default": true,
     "hint": "同会话 60 秒内只提示一次，免得刷屏"
+  },
+  "download_notice_on": {
+    "description": "下载前先回一句",
+    "type": "bool",
+    "default": true,
+    "hint": "视频要下几十秒，先说一声免得群里以为机器人死了"
+  },
+  "download_notice": {
+    "description": "下载提示文案",
+    "type": "string",
+    "default": "",
+    "hint": "留空用默认的「解析成功，已选 480P，正在下载，约 12 MB，稍后发你～」。可用 {title} {quality} {size} 三个占位符"
   }
 }

@@ -464,16 +464,13 @@ class LinkPreview(Star):
             logger.debug(f"[link_preview] {url} 由专用解析器命中: {got.site}")
         return got
 
-    async def _build_video(self, url: str, conf: dict):
-        """B 站视频：解析 + 下载。
+    QUALITY_LABELS = {16: "360P", 32: "480P", 64: "720P", 80: "1080P"}
 
-        返回消息列表（每条是一个组件列表），不是单条链。
-        OneBot 的 video 段有硬约束：message element "video" must be the only
-        segment in a message —— 带文字的 video 会被协议端 1400 打回，
-        所以文字和视频必须分两条发。
-        """
-        if not conf.get("download_video"):
-            return None
+    def _quality_label(self, qn: int) -> str:
+        return self.QUALITY_LABELS.get(int(qn), f"{qn}")
+
+    async def _probe_video(self, url: str, conf: dict):
+        """只解析，不下载。返回 (MediaRef, Preview) 或 None。"""
         timeout_s = int(conf.get("timeout") or 10)
         session = await self._get_session(timeout_s, bool(conf.get("insecure_ssl")))
         try:
@@ -481,15 +478,23 @@ class LinkPreview(Star):
         except Exception as e:
             logger.info(f"[link_preview] 取视频直链失败 {url}: {e}")
             return None
-        if not got:
-            return None
-        ref, preview = got
+        return got
 
-        path = await self._download_media(ref, conf)
-        if not path:
-            # 下载失败就退回普通预览，至少别什么都不回
-            return [await self._build_plain(preview, conf)]
+    def _download_notice(self, preview, ref, conf: dict) -> str:
+        """下载前的那句预告。"""
+        qn = int(conf.get("video_quality") or 32)
+        label = self._quality_label(qn)
+        size = f"，约 {ref.size // 1024 // 1024} MB" if ref.size else ""
+        template = str(conf.get("download_notice") or "").strip()
+        if template:
+            try:
+                return template.format(title=preview.title, quality=label, size=size.lstrip("，"))
+            except Exception:
+                pass
+        return f"解析成功，已选 {label}，正在下载{size}，稍后发你～"
 
+    async def _video_chain(self, preview, path: str, conf: dict):
+        """下载完构造消息：文字一条、视频一条。"""
         lines = [f"【{preview.title}】"]
         if preview.extra:
             lines.append(preview.extra)
@@ -499,9 +504,22 @@ class LinkPreview(Star):
         media = self._media_component(path, conf)
         if media is None:
             return [[Comp.Plain("\n".join(lines))]]
-
-        # 第一条只有文字，第二条只有视频/文件，各自成消息
+        # OneBot 硬约束：video 段必须独占一条消息，所以文字和视频分开
         return [[Comp.Plain("\n".join(lines))], [media]]
+
+    async def _build_video(self, url: str, conf: dict):
+        """B 站视频：解析 + 下载，一次性返回全部消息。给 /下载 指令用。"""
+        if not conf.get("download_video"):
+            return None
+        got = await self._probe_video(url, conf)
+        if not got:
+            return None
+        ref, preview = got
+
+        path = await self._download_media(ref, conf)
+        if not path:
+            return [await self._build_plain(preview, conf)]
+        return await self._video_chain(preview, path, conf)
 
     async def _build_plain(self, info: Preview, conf: dict):
         """只有文字 + 封面，不下载媒体。"""
@@ -524,15 +542,7 @@ class LinkPreview(Star):
         return comps
 
     async def _build_chain(self, url: str, conf: dict):
-        if conf.get("download_video") and match_bilibili(url):
-            try:
-                video_chain = await self._build_video(url, conf)
-            except Exception as e:
-                logger.warning(f"[link_preview] 视频流程异常 {url}: {e}")
-                video_chain = None
-            if video_chain:
-                return video_chain
-
+        """非视频的解析。视频走 on_any_message 里的专门分支，因为要先发提示再下。"""
         info = await self._resolve(url, conf)
         if info:
             return [await self._build_plain(info, conf)]
@@ -852,13 +862,43 @@ class LinkPreview(Star):
             return
 
         for url in urls:
+            # B 站视频单独走：先解析拿元信息，回一句"正在下载"，下完再发文件。
+            # 下载要几十秒，什么都不说就发文件，群里会以为机器人死了。
+            if conf.get("download_video") and match_bilibili(url):
+                handled = False
+                try:
+                    got = await self._probe_video(url, conf)
+                except Exception as e:
+                    logger.warning(f"[link_preview] 解析视频失败 {url}: {e}")
+                    got = None
+                if got:
+                    ref, preview = got
+                    if conf.get("download_notice_on", True):
+                        yield event.plain_result(self._download_notice(preview, ref, conf))
+                    try:
+                        path = await self._download_media(ref, conf)
+                    except Exception as e:
+                        logger.warning(f"[link_preview] 下载视频失败 {url}: {e}")
+                        path = None
+                    if path:
+                        for comps in await self._video_chain(preview, path, conf):
+                            yield event.chain_result(comps)
+                        if conf.get("stop_llm"):
+                            event.stop_event()
+                        continue
+                    # 下载失败退回预览
+                    yield event.chain_result(await self._build_plain(preview, conf))
+                    handled = True
+                if handled:
+                    continue
+                # 视频没解析出来，走通用流程兜底
+
             try:
                 chain = await self._build_chain(url, conf)
             except Exception as e:
                 logger.warning(f"[link_preview] 处理 {url} 异常: {e}")
                 chain = None
             if chain:
-                # chain 是消息列表：视频那条必须单独成消息，所以逐条 yield
                 for comps in chain:
                     yield event.chain_result(comps)
                 if conf.get("stop_llm"):

@@ -189,6 +189,22 @@ check("空卡片返回空", _p2._urls_from_card({"app": "x"}), [])
 check("双层 data 也能挖", _p2._urls_from_card({"data": '{"meta":{"detail_1":{"qqdocurl":"https://b23.tv/xyz"}}}'})[0],
       "https://b23.tv/xyz")
 
+# 8.6 下载提示文案
+_p3 = plugin.LinkPreview.__new__(plugin.LinkPreview)
+_p3._last_at = {}; _p3._hint_at = {}
+_prev = resolvers.Preview(url="u", title="测试视频")
+_ref = resolvers.MediaRef(url="x", size=12 * 1024 * 1024)
+check("默认提示含清晰度", "480P" in _p3._download_notice(_prev, _ref, {"video_quality": 32}), True)
+check("默认提示含大小", "12 MB" in _p3._download_notice(_prev, _ref, {"video_quality": 32}), True)
+check("360P 标签", _p3._quality_label(16), "360P")
+check("720P 标签", _p3._quality_label(64), "720P")
+check("未知清晰度", _p3._quality_label(999), "999")
+check("自定义模板", _p3._download_notice(_prev, _ref,
+      {"video_quality": 32, "download_notice": "在下了：{title} {quality}"}), "在下了：测试视频 480P")
+check("坏模板不炸", "480P" in _p3._download_notice(_prev, _ref,
+      {"video_quality": 32, "download_notice": "{不存在}"}), True)
+check("大小未知时不写", "约" in _p3._download_notice(_prev, resolvers.MediaRef(url="x", size=0), {"video_quality": 32}), False)
+
 # 9. 消息分段：video 必须独占一条（OneBot retcode 1400 的约束）
 async def _seg_check():
     conf = {"download_video": True, "timeout": 25, "max_video_mb": 50, "video_quality": 32,
