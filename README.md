@@ -202,3 +202,23 @@ set GIT_PATH=C:\Users\<你>\PortableGit\cmd\git.exe
 **GIT_PATH 那行为什么也要**：PATH 里的 git 是 dsh 自带的
 （`dsh-ops/shells/.../winuxcmd/usr/bin/git.exe`），它的 schannel 后端推 GitHub 报
 `SEC_E_NO_CREDENTIALS`。PortableGit 那个配 openssl 后端能用。
+
+### 视频为什么分两条消息发
+
+OneBot v11 对 video 段有硬约束，协议端直接返回：
+
+```
+retcode=1400
+wording='message element "video" must be the only segment in a message'
+```
+
+所以带文字的 video 消息整条会被拒，插件这边看起来「发了」其实没发出去。
+现在的做法是文字一条、视频一条：
+
+```
+消息1: [Plain]   【标题】UP主 · 时长 / 链接 / 文件 10 MB
+消息2: [Video]   视频本体
+```
+
+配置里 `video_send_mode` 可以切成 `file`，改成发群文件，
+某些协议端更稳，但群里会显示成附件而不是能直接播放的视频。

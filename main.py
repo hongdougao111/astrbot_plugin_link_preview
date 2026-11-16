@@ -464,7 +464,13 @@ class LinkPreview(Star):
         return got
 
     async def _build_video(self, url: str, conf: dict):
-        """B 站视频：解析 + 下载 + 回一条带视频的消息链。拿不到返回 None。"""
+        """B 站视频：解析 + 下载。
+
+        返回消息列表（每条是一个组件列表），不是单条链。
+        OneBot 的 video 段有硬约束：message element "video" must be the only
+        segment in a message —— 带文字的 video 会被协议端 1400 打回，
+        所以文字和视频必须分两条发。
+        """
         if not conf.get("download_video"):
             return None
         timeout_s = int(conf.get("timeout") or 10)
@@ -481,7 +487,7 @@ class LinkPreview(Star):
         path = await self._download_media(ref, conf)
         if not path:
             # 下载失败就退回普通预览，至少别什么都不回
-            return await self._build_plain(preview, conf)
+            return [await self._build_plain(preview, conf)]
 
         lines = [f"【{preview.title}】"]
         if preview.extra:
@@ -489,11 +495,12 @@ class LinkPreview(Star):
         lines.append(preview.url)
         lines.append(f"文件 {os.path.getsize(path) // 1024 // 1024} MB")
 
-        comps = [Comp.Plain("\n".join(lines))]
-        media = self._media_component(path)
-        if media is not None:
-            comps.append(media)
-        return comps
+        media = self._media_component(path, conf)
+        if media is None:
+            return [[Comp.Plain("\n".join(lines))]]
+
+        # 第一条只有文字，第二条只有视频/文件，各自成消息
+        return [[Comp.Plain("\n".join(lines))], [media]]
 
     async def _build_plain(self, info: Preview, conf: dict):
         """只有文字 + 封面，不下载媒体。"""
@@ -527,7 +534,7 @@ class LinkPreview(Star):
 
         info = await self._resolve(url, conf)
         if info:
-            return await self._build_plain(info, conf)
+            return [await self._build_plain(info, conf)]
 
         # 回落：通用 meta 解析
         info = await self._parse(url, conf)
@@ -623,8 +630,18 @@ class LinkPreview(Star):
                 pass
             return None
 
-    def _media_component(self, path: str):
-        """把本地文件包成消息组件。视频优先，装不上就退回文件。"""
+    def _media_component(self, path: str, conf: dict):
+        """把本地文件包成一个消息组件。按 video_send_mode 选视频还是文件。
+
+        注意：返回的是**单个**组件，调用方必须让它独占一条消息。
+        """
+        mode = str(conf.get("video_send_mode") or "video")
+        if mode == "file":
+            try:
+                return Comp.File(file=path, name=os.path.basename(path))
+            except Exception as e:
+                logger.warning(f"[link_preview] File 组件不可用: {e}")
+                return None
         try:
             return Comp.Video.fromFileSystem(path=path)
         except Exception as e:
@@ -705,7 +722,9 @@ class LinkPreview(Star):
                 logger.warning(f"[link_preview] 处理 {url} 异常: {e}")
                 chain = None
             if chain:
-                yield event.chain_result(chain)
+                # chain 是消息列表：视频那条必须单独成消息，所以逐条 yield
+                for comps in chain:
+                    yield event.chain_result(comps)
                 if conf.get("stop_llm"):
                     event.stop_event()  # 由插件接管，不再走 AI 回复
             elif not conf.get("silent_on_fail", True):

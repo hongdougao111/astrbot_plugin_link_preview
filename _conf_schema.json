@@ -163,5 +163,19 @@
       "720P"
     ],
     "hint": "不带 B 站 Cookie 时最高只能到 720P。清晰度越高文件越大"
+  },
+  "video_send_mode": {
+    "description": "视频怎么发",
+    "type": "string",
+    "default": "video",
+    "options": [
+      "video",
+      "file"
+    ],
+    "labels": [
+      "当作视频消息",
+      "当作群文件"
+    ],
+    "hint": "OneBot 规定 video 段必须独占一条消息，所以文字和视频会分两条发。文件方式在某些协议端更稳，但群里显示成附件"
   }
 }

@@ -21,7 +21,7 @@ desc: |
   - 失败静默，不刷报错
 
   指令只有两个（管理员）：/解析 看状态，/解析 开|关 切换。
-version: 1.0.0
+version: 1.0.1
 author: hongdougao111
 repo: https://github.com/hongdougao111/astrbot_plugin_link_preview
 astrbot_version: ">=4.9.2"

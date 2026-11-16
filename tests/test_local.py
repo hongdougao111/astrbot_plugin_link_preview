@@ -141,6 +141,36 @@ check("验证码页识别", resolvers.is_blocked_page("验证码中间页"), Tru
 check("正常标题不误判", resolvers.is_blocked_page("【官方 MV】Never Gonna Give You Up"), False)
 check("cloudflare 页识别", resolvers.is_blocked_page("Just a moment..."), True)
 
+# 9. 消息分段：video 必须独占一条（OneBot retcode 1400 的约束）
+async def _seg_check():
+    conf = {"download_video": True, "timeout": 25, "max_video_mb": 50, "video_quality": 32,
+            "send_image": False, "insecure_ssl": True, "user_agent": "x", "extra_headers": {},
+            "max_image_mb": 5, "platform_resolvers": True, "video_send_mode": "video"}
+    p = plugin.LinkPreview.__new__(plugin.LinkPreview)
+    p._last_at = {}; p._session = None; p._cache_dir = None; p._state = None
+    p._schema_defaults = {}
+    p.get_config = lambda: dict(conf)
+    # 不走网络：直接给一个假媒体路径，验证消息分段逻辑
+    import tempfile, os
+    fake = os.path.join(tempfile.gettempdir(), "t.mp4")
+    open(fake, "wb").write(b"x" * 1024)
+    p._download_media = lambda ref, c: asyncio.sleep(0, result=fake)
+    p._conf = lambda: dict(conf)
+    segs = await p._build_video("https://www.bilibili.com/video/BV1GJ411x7h7", conf)
+    if not segs:
+        return "None"
+    kinds = [[type(x).__name__ if not isinstance(x, tuple) else x[0] for x in s] for s in segs]
+    for s in kinds:
+        if "video" in s and len(s) > 1:
+            return f"video 和别的段混在一条里: {kinds}"
+    return "ok" if any("video" in s for s in kinds) else f"没有 video 段: {kinds}"
+
+
+try:
+    check("video 独占一条消息", asyncio.run(_seg_check()), "ok")
+except Exception as e:
+    check("video 独占一条消息", f"EXC {e}", "ok")
+
 print()
 if fails:
     print("FAILED:")
