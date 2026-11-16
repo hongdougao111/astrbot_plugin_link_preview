@@ -10,18 +10,19 @@ desc: |
     拿 durl 合并流（音视频已并好），标题、UP 主、时长齐全，支持 b23.tv 短链
   - 网易云音乐：走 api/song/detail，歌名、歌手、专辑、封面
   - 其他网页：og:title / og:description / og:image / title / description
-  - 抖音：需要配置 douyin_cookie，无 Cookie 时分享页只下发页面壳，解析不出来
 
   主要能力：
   - 视频流式下载，边收边写边数字节，超上限立刻中止，不会写满磁盘
-  - 封面图落盘缓存，规避平台防盗链（B 站、抖音图床都查 Referer）
+  - 封面图落盘缓存，规避平台防盗链（B 站图床查 Referer）
   - 缓存键用 bvid + 清晰度，直链签名变化不会重复下载
   - 按会话开关，一个群关掉不影响别的群，状态落盘重启不丢
   - 域名白名单 / 黑名单、单条消息解析数量、会话冷却都可配
   - 失败静默，不刷报错
 
-  指令只有两个（管理员）：/解析 看状态，/解析 开|关 切换。
-version: 1.0.1
+  点歌：/点 歌名 或 /点 歌手，搜到能播的直接发语音。
+
+  指令只有两个（管理员）：/解析 看状态，/解析 开|关 切换；点歌是 /点。
+version: 1.1.0
 author: hongdougao111
 repo: https://github.com/hongdougao111/astrbot_plugin_link_preview
 astrbot_version: ">=4.9.2"

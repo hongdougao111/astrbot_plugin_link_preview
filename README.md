@@ -61,23 +61,6 @@ WebUI 插件配置页里改，或者直接编辑 `data/config/astrbot_plugin_lin
 | --- | --- | --- | --- |
 | 哔哩哔哩 | bilibili.com / b23.tv / bili2233.cn | 官方 `x/web-interface/view` 接口 | 可用，实测通过 |
 | 网易云音乐 | music.163.com / 163cn.tv | 官方 `api/song/detail` 接口 | 可用，实测通过 |
-| 抖音 | douyin.com / v.douyin.com / iesdouyin.com | 分享页 `_ROUTER_DATA` | 需要 Cookie，见下 |
-
-### 抖音这一块得说清楚
-
-无 Cookie 请求分享页，返回的 `_ROUTER_DATA` 里只有页面壳，
-`videoInfoRes.item_list` 是空的。换 PC UA 直接吐 `验证码中间页`。
-旧接口 `/web/api/v2/aweme/iteminfo/` 现在返回空 body，
-`/aweme/v1/web/aweme/detail/` 直接 `403 Blocked by ArgusSecurityPlugin`。
-
-插件不做签名算法。那东西跟着抖音前端版本变，写死在插件里过两周就废，
-维护成本比功能本身高。**配置里有个 `douyin_cookie`，贴一条你自己浏览器的
-Cookie 进去就能解析**。不填也能装，只是抖音链接会返回空，静默跳过。
-
-拿 Cookie：浏览器打开 douyin.com 并登录 → F12 → Network → 随便点一个请求 →
-Request Headers 里复制整条 `Cookie` 的值。
-
-Cookie 失效了会退化成解析不出来，重新复制一条就行。
 
 ### 加新平台
 
@@ -113,7 +96,28 @@ Cookie 失效了会退化成解析不出来，重新复制一条就行。
 
 **只有 B 站能下**。网易云的音频接口 `song/enhance/player/url` 现在对无 Cookie
 请求返回 `code:-110`（版权限制），`song/media/outer/url` 直接 404。
-抖音要 Cookie 加签名。这两个都没做，别指望。
+抖音整个去掉了：无 Cookie 拿不到数据，做签名算法又跟不上它前端改版，留着一个必然失败的解析器没意义。
+
+
+## 点歌
+
+```
+/点 起风了
+/点 周杰伦
+```
+
+歌名和歌手都行。搜到之后挑第一条能直接播的，回一条歌词信息 + 一条语音。
+
+**能播的判定**：网易云的老外链接口
+`music.163.com/song/media/outer/url?id=<id>` 能播的歌直接 302 到音频文件，
+不能播的重定向到 404 页面。用 `Content-Type` 是不是 `audio/*` 来判断，不靠猜。
+
+**为什么只挑能播的**：网易云大部分热门歌是 VIP 或者版权受限，实测搜 8 条能播 1-2 条。
+所以搜 8 条全探一遍（`asyncio.gather` 并行），挑第一条能播的。
+一条都不行就直说，不装作发了。
+
+**音频格式**：OneBot 的 record 段只认 wav 和 silk，但 NapCat / Lagrange 这些协议端
+对 mp3 也能吃。这里优先发 mp3（省流量），发不出去退回文件。音频同样独占一条消息。
 
 ## 自测
 

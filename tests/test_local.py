@@ -56,6 +56,7 @@ def _stub():
     mc.Video = types.SimpleNamespace(fromFileSystem=lambda **k: ("video", k.get("path")))
     mc.Video.fromURL = lambda url: ("video-url", url)
     mc.File = lambda **k: ("file", k.get("file"))
+    mc.Record = lambda **k: ("record", k.get("file"))
 
     sys.modules["astrbot"] = a
     sys.modules["astrbot.api"] = a1
@@ -119,14 +120,25 @@ check("冷却 0 不拦", pl._cooling("s1", {"cooldown": 0}), False)
 check("B站直链", resolvers.pick("https://www.bilibili.com/video/BV1GJ411x7h7").__name__, "resolve_bilibili")
 check("B站短链", resolvers.pick("https://b23.tv/abc").__name__, "resolve_bilibili")
 check("网易云", resolvers.pick("https://music.163.com/#/song?id=1").__name__, "resolve_netease")
-check("抖音", resolvers.pick("https://v.douyin.com/x/").__name__, "resolve_douyin")
+check("抖音已移除", resolvers.pick("https://v.douyin.com/x/"), None)
 check("无关域名回落", resolvers.pick("https://github.com/a/b"), None)
 check("伪装域名不误判", resolvers.pick("https://fakebilibili.com/x"), None)
 
 # 6. B站 ID 抽取
 check("BV 号", resolvers.BILI_BV.search("https://www.bilibili.com/video/BV1GJ411x7h7/?p=2").group(1), "BV1GJ411x7h7")
 check("av 号", resolvers.BILI_AV.search("https://www.bilibili.com/video/av170001").group(1), "170001")
-check("抖音 id", resolvers.DY_VIDEO_ID.search("https://www.douyin.com/video/7298145681699622182").group(1), "7298145681699622182")
+# 抖音解析已删除，DY_VIDEO_ID 不该再存在
+check("抖音正则已移除", hasattr(resolvers, "DY_VIDEO_ID"), False)
+
+# 点歌：song_summary 的字段压缩
+_s = resolvers.song_summary({
+    "id": 1, "name": "测试", "duration": 213000,
+    "artists": [{"name": "A"}, {"name": "B"}],
+    "album": {"name": "专辑", "picUrl": "http://p1.music.126.net/x.jpg"},
+})
+check("song_summary 歌手拼接", _s["artists"], "A、B")
+check("song_summary 时长转秒", _s["duration"], 213)
+check("song_summary 封面升 https", _s["cover"].startswith("https://"), True)
 
 # 7. 格式化
 check("时长", resolvers._fmt_duration(213), "3:33")

@@ -226,99 +226,6 @@ async def resolve_netease(session: aiohttp.ClientSession, url: str) -> Preview |
     )
 
 
-# ---------------------------------------------------------------- 抖音
-
-DY_VIDEO_ID = re.compile(r"/(?:video|note)/(\d{6,})")
-
-
-def _match_douyin(url: str) -> bool:
-    return _host_is(urlparse(url).hostname or "", "douyin.com", "iesdouyin.com")
-
-
-async def resolve_douyin(
-    session: aiohttp.ClientSession, url: str, cookie: str = ""
-) -> Preview | None:
-    """抖音分享页在无 Cookie 时只下发页面壳，_ROUTER_DATA 里经常没有 item_list，
-    甚至直接给一个验证码中间页。能拿到就拿，拿不到返回 None 让调用方回落通用 meta。
-
-    cookie 参数留给用户在配置里贴上自己的抖音 Cookie —— 这是唯一稳定拿到数据的办法，
-    插件本身不做签名算法（那要随抖音前端一起变，维护不起）。
-    """
-    real = await resolve_short_url(session, url, ua=MOBILE_UA)
-    m = DY_VIDEO_ID.search(real)
-    if not m:
-        return None
-    vid = m.group(1)
-
-    share = f"https://www.iesdouyin.com/share/video/{vid}/"
-    headers = {"User-Agent": MOBILE_UA, "Accept-Language": "zh-CN,zh;q=0.9"}
-    if cookie:
-        headers["Cookie"] = cookie
-    try:
-        async with session.get(share, headers=headers, allow_redirects=True) as resp:
-            text = (await resp.read()).decode("utf-8", "replace")
-    except Exception:
-        return None
-
-    idx = text.find("_ROUTER_DATA")
-    if idx < 0:
-        return None
-    eq = text.find("=", idx)
-    if eq < 0:
-        return None
-    try:
-        data, _ = json.JSONDecoder().raw_decode(text[eq + 1:].lstrip())
-    except ValueError:
-        return None
-
-    loader = data.get("loaderData") or {}
-    item = None
-    for value in loader.values():
-        if not isinstance(value, dict):
-            continue
-        res = value.get("videoInfoRes")
-        if isinstance(res, dict):
-            items = res.get("item_list") or []
-            if items:
-                item = items[0]
-                break
-    if not item:
-        return None
-
-    video = item.get("video") or {}
-    cover = ""
-    cov = video.get("cover") or video.get("origin_cover") or {}
-    if isinstance(cov, dict):
-        urls = cov.get("url_list") or []
-        if urls:
-            cover = urls[0]
-    elif isinstance(cov, str):
-        cover = cov
-
-    author = (item.get("author") or {}).get("nickname", "")
-    stats = item.get("statistics") or {}
-    bits = []
-    if author:
-        bits.append(f"@{author}")
-    likes = _fmt_count(stats.get("digg_count"))
-    if likes:
-        bits.append(f"{likes}赞")
-    dur = _fmt_duration((video.get("duration") or 0) // 1000 if video.get("duration") else 0)
-    if dur:
-        bits.append(dur)
-
-    desc = (item.get("desc") or "").strip()
-    return Preview(
-        url=f"https://www.douyin.com/video/{vid}",
-        title=desc.split("\n")[0][:60] or "抖音视频",
-        site="抖音",
-        desc=desc[:200],
-        image=_https(cover),
-        extra=" · ".join(bits),
-        referer="https://www.douyin.com/",
-        kind="video",
-    )
-
 
 # ---------------------------------------------------------------- 媒体直链
 
@@ -413,12 +320,71 @@ async def bilibili_stream(
     )
 
 
+# ---------------------------------------------------------------- 网易云点歌
+
+async def netease_search(
+    session: aiohttp.ClientSession, keyword: str, limit: int = 5
+) -> list[dict]:
+    """搜歌。keyword 可以是歌名，也可以是歌手。返回原始 song 列表。"""
+    import urllib.parse
+
+    url = (
+        "https://music.163.com/api/search/get/web?s="
+        + urllib.parse.quote(keyword)
+        + f"&type=1&offset=0&limit={limit}"
+    )
+    headers = {"User-Agent": PC_UA, "Referer": "https://music.163.com/"}
+    try:
+        async with session.get(url, headers=headers) as resp:
+            data = json.loads(await resp.read())
+    except Exception:
+        return []
+    songs = (data.get("result") or {}).get("songs") or []
+    return songs if isinstance(songs, list) else []
+
+
+def song_summary(song: dict) -> dict:
+    """把接口返回的 song 压成好用的几个字段。"""
+    artists = "、".join(a.get("name", "") for a in (song.get("artists") or []) if a.get("name"))
+    album = song.get("album") or {}
+    return {
+        "id": song.get("id"),
+        "name": song.get("name") or "",
+        "artists": artists,
+        "album": album.get("name") or "",
+        "cover": _https(album.get("picUrl") or ""),
+        "duration": int(song.get("duration") or 0) // 1000,
+        "fee": song.get("fee"),
+    }
+
+
+async def netease_audio_url(
+    session: aiohttp.ClientSession, song_id: int
+) -> tuple[str, str] | None:
+    """拿歌曲音频直链。返回 (url, 说明)，拿不到返回 None。
+
+    走老的外链接口 https://music.163.com/song/media/outer/url?id=<id>：
+    能播的直接 302 到音频文件，不能播的重定向到 404 页面 —— 靠 Content-Type 区分。
+    注意这条路只对「免费可播」的歌有效，VIP 和部分版权受限的拿不到，
+    enhance/player/url 那条现在对无登录请求直接返回 code=-110。
+    """
+    url = f"https://music.163.com/song/media/outer/url?id={song_id}"
+    headers = {"User-Agent": PC_UA, "Referer": "https://music.163.com/"}
+    try:
+        async with session.get(url, headers=headers, allow_redirects=True) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "audio" not in ctype:
+                return None
+            return str(resp.url), str(resp.headers.get("Content-Length") or "0")
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------- 登记表
 
 RESOLVERS: list[tuple[Callable[[str], bool], Callable[..., Awaitable[Preview | None]]]] = [
     (_match_bilibili, resolve_bilibili),
     (_match_netease, resolve_netease),
-    (_match_douyin, resolve_douyin),
 ]
 
 # 这些标题说明抓到的是风控中间页，不是真内容，不能当解析结果发出去

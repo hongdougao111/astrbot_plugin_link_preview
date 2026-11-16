@@ -34,8 +34,10 @@ try:  # 正常是作为包加载的
         bilibili_stream,
         is_blocked_page,
         match_bilibili,
+        netease_audio_url,
+        netease_search,
         pick as pick_resolver,
-        resolve_douyin,
+        song_summary,
     )
 except ImportError:  # 万一被当独立文件加载
     import sys
@@ -47,8 +49,10 @@ except ImportError:  # 万一被当独立文件加载
         bilibili_stream,
         is_blocked_page,
         match_bilibili,
+        netease_audio_url,
+        netease_search,
         pick as pick_resolver,
-        resolve_douyin,
+        song_summary,
     )
 
 # 链接提取：遇到空白、尖括号、中文标点、括号即截断，避免把句末符号吃进 URL
@@ -451,11 +455,7 @@ class LinkPreview(Star):
         timeout_s = int(conf.get("timeout") or 10)
         session = await self._get_session(timeout_s, bool(conf.get("insecure_ssl")))
         try:
-            # 抖音解析器额外吃一个 cookie，其余解析器不认这个参数
-            if fn is resolve_douyin:
-                got = await fn(session, url, conf.get("douyin_cookie") or "")
-            else:
-                got = await fn(session, url)
+            got = await fn(session, url)
         except Exception as e:
             logger.debug(f"[link_preview] 平台解析器处理 {url} 出错: {e}")
             return None
@@ -729,6 +729,114 @@ class LinkPreview(Star):
                     event.stop_event()  # 由插件接管，不再走 AI 回复
             elif not conf.get("silent_on_fail", True):
                 yield event.plain_result(f"这个链接没能解析出来：{url}")
+
+    # ---------- 点歌 ----------
+
+    async def _pick_playable(self, session, songs: list) -> list:
+        """从搜索结果里挑出真能播的，最多三条。并行探测，别一个个等。"""
+
+        async def probe(song):
+            sm = song_summary(song)
+            got = await netease_audio_url(session, sm["id"])
+            return (sm, got) if got else None
+
+        results = await asyncio.gather(
+            *(probe(s) for s in songs), return_exceptions=True
+        )
+        out = []
+        for r in results:
+            if isinstance(r, Exception) or r is None:
+                continue
+            out.append(r)
+        return out
+
+    async def _fetch_audio(self, url: str, conf: dict, song_id: int) -> str | None:
+        """下载音频到本地。返回文件路径。"""
+        max_bytes = int(float(conf.get("max_audio_mb") or 12) * 1024 * 1024)
+        music_dir = self._data_dir() / "music"
+        music_dir.mkdir(parents=True, exist_ok=True)
+        out = music_dir / f"ne_{song_id}.mp3"
+        if out.exists() and out.stat().st_size > 0:
+            return str(out)
+
+        timeout_s = max(int(conf.get("timeout") or 10), 30)
+        session = await self._get_session(timeout_s, bool(conf.get("insecure_ssl")))
+        headers = {
+            "User-Agent": conf.get("user_agent") or DEFAULT_UA,
+            "Referer": "https://music.163.com/",
+        }
+        tmp = out.with_suffix(".mp3.part")
+        got = 0
+        try:
+            async with session.get(url, headers=headers, allow_redirects=True) as resp:
+                if "audio" not in (resp.headers.get("Content-Type") or "").lower():
+                    return None
+                with tmp.open("wb") as fh:
+                    async for chunk in resp.content.iter_chunked(65536):
+                        fh.write(chunk)
+                        got += len(chunk)
+                        if got > max_bytes:
+                            raise ValueError("超过大小上限")
+            if got == 0:
+                tmp.unlink(missing_ok=True)
+                return None
+            tmp.replace(out)
+            return str(out)
+        except ValueError:
+            logger.info(f"[link_preview] 音频超过 {max_bytes // 1024 // 1024}MB，放弃")
+            tmp.unlink(missing_ok=True)
+            return None
+        except Exception as e:
+            logger.info(f"[link_preview] 下载音频失败: {e}")
+            tmp.unlink(missing_ok=True)
+            return None
+
+    @filter.command("点")
+    async def song_cmd(self, event: AstrMessageEvent, keyword: str = ""):
+        """点歌：/点 起风了 或 /点 周杰伦"""
+        conf = self._conf()
+        kw = (keyword or "").strip()
+        if not kw:
+            yield event.plain_result("用法：/点 歌名 或 /点 歌手")
+            return
+        if not conf.get("netease_music", True):
+            yield event.plain_result("点歌关着，去插件配置里打开。")
+            return
+
+        timeout_s = int(conf.get("timeout") or 10)
+        session = await self._get_session(timeout_s, bool(conf.get("insecure_ssl")))
+
+        songs = await netease_search(session, kw, int(conf.get("search_limit") or 8))
+        if not songs:
+            yield event.plain_result(f"没搜到「{kw}」。")
+            return
+
+        picked = await self._pick_playable(session, songs[: int(conf.get("search_limit") or 8)])
+        if not picked:
+            yield event.plain_result(
+                f"「{kw}」搜到了，但没有能直接播的（可能是 VIP 或者版权受限）。"
+            )
+            return
+
+        sm, (audio_url, _size) = picked[0]
+        path = await self._fetch_audio(audio_url, conf, sm["id"])
+        if not path:
+            yield event.plain_result("下下来了但存不住，换个试试。")
+            return
+
+        minutes, seconds = divmod(sm["duration"], 60)
+        yield event.chain_result([Comp.Plain(
+            f"♪ {sm['name']} - {sm['artists']}\n{sm['album']} · {minutes}:{seconds:02d}"
+        )])
+        try:
+            # 和视频一样：record 段也得独占一条消息
+            yield event.chain_result([Comp.Record(file=path, url=path)])
+        except Exception as e:
+            logger.warning(f"[link_preview] 语音组件失败，改发文件: {e}")
+            try:
+                yield event.chain_result([Comp.File(file=path, name=f"{sm['name']}.mp3")])
+            except Exception as e2:
+                yield event.plain_result(f"音频发不出去：{e2}")
 
     # ---------- 指令 ----------
 

@@ -124,13 +124,6 @@
     "default": true,
     "hint": "B站、网易云、抖音走专用接口，标题和封面更完整；关掉全部走通用 meta"
   },
-  "douyin_cookie": {
-    "description": "抖音 Cookie（可选）",
-    "type": "string",
-    "default": "",
-    "secret": true,
-    "hint": "抖音不给 Cookie 时只返回页面壳，解析不出来。从浏览器 F12 里复制整条 Cookie 贴这里；不填也能用，只是抖音链接多半拿不到数据"
-  },
   "download_video": {
     "description": "B 站链接自动下载视频发出来",
     "type": "bool",
@@ -177,5 +170,32 @@
       "当作群文件"
     ],
     "hint": "OneBot 规定 video 段必须独占一条消息，所以文字和视频会分两条发。文件方式在某些协议端更稳，但群里显示成附件"
+  },
+  "netease_music": {
+    "description": "允许点歌",
+    "type": "bool",
+    "default": true,
+    "hint": "/点 歌名 或 /点 歌手，能播的直接发语音"
+  },
+  "search_limit": {
+    "description": "点歌时搜几条候选",
+    "type": "int",
+    "default": 8,
+    "slider": {
+      "min": 3,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "搜得多一点更容易碰到能播的版本"
+  },
+  "max_audio_mb": {
+    "description": "音频大小上限 MB",
+    "type": "float",
+    "default": 12,
+    "slider": {
+      "min": 2,
+      "max": 50,
+      "step": 1
+    }
   }
 }
