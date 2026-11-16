@@ -119,6 +119,32 @@ WebUI 插件配置页里改，或者直接编辑 `data/config/astrbot_plugin_lin
 **音频格式**：OneBot 的 record 段只认 wav 和 silk，但 NapCat / Lagrange 这些协议端
 对 mp3 也能吃。这里优先发 mp3（省流量），发不出去退回文件。音频同样独占一条消息。
 
+
+## 小程序 / 分享卡片
+
+QQ 里把 B 站视频转发成卡片，消息里**没有 http 文本**，链接藏在 `json` 消息段的 meta 里。
+插件现在会从消息链里挖，不用你手动复制链接。
+
+认两种结构：
+
+```
+com.tencent.miniapp_01  →  meta.detail_1.qqdocurl
+com.tencent.structmsg   →  meta.news.jumpUrl
+```
+
+字段名不固定，所以是递归找 `qqdocurl` / `jumpUrl` / `jump_url` / `url` 这几个键，
+最多钻 6 层、取前 3 条。`Share` 组件的 `url` 是直接字段，单独处理。
+
+OneBot 的 json 段常把整段再包一层（`{"data": "<JSON 字符串>"}`），这个也解。
+
+**注意**：卡片里的短链有过期时间。截图里那条 `b23.tv/DPBqgs` 我实测返回：
+
+```json
+{"code":-404,"message":"啥都没有","ttl":1}
+```
+
+短链失效了就没救，换成长链或者重新分享。这个是 B 站那边的问题，不是解析的问题。
+
 ## 自测
 
 不用装 AstrBot：

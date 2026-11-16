@@ -197,5 +197,11 @@
       "max": 50,
       "step": 1
     }
+  },
+  "parse_cards": {
+    "description": "解析小程序 / 分享卡片",
+    "type": "bool",
+    "default": true,
+    "hint": "QQ 小程序卡片里的链接藏在 json 消息段的 meta 里，靠文本匹配扫不到，要单独挖"
   }
 }

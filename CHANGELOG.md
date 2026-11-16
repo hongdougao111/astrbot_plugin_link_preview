@@ -1,5 +1,23 @@
 # 更新日志
 
+## v1.1.1
+
+### 新增
+
+- **解析小程序 / 分享卡片**。QQ 里把视频转发成卡片时，消息里没有 http 文本，
+  链接藏在 `json` 消息段的 meta 里，靠文本匹配扫不到。现在从消息链里挖。
+  - `com.tencent.miniapp_01` → `meta.detail_1.qqdocurl`
+  - `com.tencent.structmsg` → `meta.news.jumpUrl`
+  - 字段名不固定，递归找 6 层，取前 3 条
+  - `Share` 组件的 `url` 是直接字段，单独处理
+  - 兼容 OneBot json 段的双层包裹 `{"data": "<JSON字符串>"}`
+- `parse_cards` 配置项，可关
+
+### 修复
+
+- 主流程原来用 `if "http" not in text: return` 提前返回，卡片消息永远进不来
+
+
 ## v1.1.0
 
 ### 新增

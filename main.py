@@ -652,6 +652,115 @@ class LinkPreview(Star):
             logger.warning(f"[link_preview] 构造媒体组件失败: {e}")
             return None
 
+    # ---------- 小程序 / 卡片 ----------
+
+    # QQ 小程序卡片走 json 消息段，里面的链接藏在几层 meta 里。
+    # 常见的两种结构：
+    #   com.tencent.miniapp_01 -> meta.detail_1.qqdocurl
+    #   com.tencent.structmsg  -> meta.news.jumpUrl
+    _CARD_URL_KEYS = ("qqdocurl", "jumpUrl", "jump_url", "url")
+
+    def _urls_from_card(self, data) -> list[str]:
+        """从卡片 JSON 里挖出 URL。结构不固定，所以递归找。"""
+        # OneBot 的 json 段常把整段再包一层：{"data": "<JSON 字符串>"}
+        import json as _json
+
+        for _ in range(3):
+            if isinstance(data, str):
+                try:
+                    data = _json.loads(data)
+                except Exception:
+                    return []
+            elif isinstance(data, dict) and isinstance(data.get("data"), str):
+                data = data["data"]
+            else:
+                break
+
+        found: list[str] = []
+
+        def walk(node, depth=0):
+            if depth > 6 or len(found) >= 3:
+                return
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key in self._CARD_URL_KEYS and isinstance(value, str):
+                        v = value.strip()
+                        if v.startswith("http") and v not in found:
+                            found.append(v)
+                    else:
+                        walk(value, depth + 1)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item, depth + 1)
+            elif isinstance(node, str) and node.startswith("http") and len(node) < 300:
+                if node not in found and "qq.com" not in node:
+                    found.append(node)
+
+        try:
+            walk(data)
+        except Exception as e:
+            logger.debug(f"[link_preview] 解析卡片失败: {e}")
+        return found
+
+    def _take_card_urls(self, event, conf: dict) -> list[str]:
+        """扫消息链里的小程序 / 分享卡片。message_str 只有纯文本，卡片不在里面。"""
+        obj = getattr(event, "message_obj", None)
+        chain = getattr(obj, "message", None) if obj else None
+        if not chain:
+            return []
+
+        out: list[str] = []
+        for comp in chain:
+            try:
+                raw_type = getattr(comp, "type", "")
+                type_name = getattr(raw_type, "value", raw_type)
+                kind = str(type_name).lower()
+                if kind == "share":
+                    # Share 组件的 url 是直接字段，不套在 data 里
+                    u = str(getattr(comp, "url", "") or "").strip()
+                    if u.startswith("http") and u not in out:
+                        out.append(u)
+                    continue
+                if kind != "json":
+                    continue
+
+                data = getattr(comp, "data", None)
+                # OneBot 的 json 段常见两层：data.data 还是个 JSON 字符串
+                for _ in range(3):
+                    if isinstance(data, str):
+                        try:
+                            import json as _json
+
+                            data = _json.loads(data)
+                        except Exception:
+                            data = None
+                            break
+                    elif isinstance(data, dict) and isinstance(data.get("data"), str):
+                        data = data["data"]
+                    else:
+                        break
+                if not isinstance(data, dict):
+                    continue
+                for u in self._urls_from_card(data):
+                    if u not in out:
+                        out.append(u)
+            except Exception as e:
+                logger.debug(f"[link_preview] 处理消息段失败: {e}")
+
+        # 复用同一套黑白名单
+        allowed: list[str] = []
+        for u in out:
+            host = urlparse(u).hostname or ""
+            if not host:
+                continue
+            if _domain_ok(host, conf.get("blacklist") or []):
+                continue
+            white = conf.get("whitelist") or []
+            if white and not _domain_ok(host, white):
+                continue
+            allowed.append(u)
+        return allowed[: int(conf.get("max_links") or 1)]
+
     def _take_urls(self, text: str, conf: dict) -> list[str]:
         found: list[str] = []
         seen: set[str] = set()
@@ -704,10 +813,10 @@ class LinkPreview(Star):
             pass
 
         text = event.message_str or ""
-        if "http" not in text:
-            return
-
-        urls = self._take_urls(text, conf)
+        urls = self._take_urls(text, conf) if "http" in text else []
+        # 小程序 / 分享卡片不带 http 文本，得从消息链里挖
+        if not urls and conf.get("parse_cards", True):
+            urls = self._take_card_urls(event, conf)
         if not urls:
             return
 

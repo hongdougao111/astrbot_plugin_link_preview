@@ -153,6 +153,30 @@ check("验证码页识别", resolvers.is_blocked_page("验证码中间页"), Tru
 check("正常标题不误判", resolvers.is_blocked_page("【官方 MV】Never Gonna Give You Up"), False)
 check("cloudflare 页识别", resolvers.is_blocked_page("Just a moment..."), True)
 
+# 8.5 小程序卡片 URL 提取
+_p2 = plugin.LinkPreview.__new__(plugin.LinkPreview)
+_p2._last_at = {}
+_card_mini = {
+    "app": "com.tencent.miniapp_01",
+    "meta": {
+        "detail_1": {
+            "appid": "1109937557",
+            "title": "哔哩哔哩",
+            "desc": "点击查看",
+            "qqdocurl": "https://b23.tv/DPBqgs",
+            "preview": "https://pic.example.com/a.jpg",
+        }
+    },
+}
+check("小程序 qqdocurl", _p2._urls_from_card(_card_mini)[0], "https://b23.tv/DPBqgs")
+_card_news = {"app": "com.tencent.structmsg", "meta": {"news": {"jumpUrl": "https://example.com/x", "title": "t"}}}
+check("structmsg jumpUrl", _p2._urls_from_card(_card_news)[0], "https://example.com/x")
+check("深层嵌套也能挖", _p2._urls_from_card({"a": {"b": [{"c": {"jumpUrl": "https://deep.cn/y"}}]}})[0], "https://deep.cn/y")
+check("空卡片返回空", _p2._urls_from_card({"app": "x"}), [])
+# 双层 data（OneBot json 段常见：data.data 还是 JSON 字符串）
+check("双层 data 也能挖", _p2._urls_from_card({"data": '{"meta":{"detail_1":{"qqdocurl":"https://b23.tv/xyz"}}}'})[0],
+      "https://b23.tv/xyz")
+
 # 9. 消息分段：video 必须独占一条（OneBot retcode 1400 的约束）
 async def _seg_check():
     conf = {"download_video": True, "timeout": 25, "max_video_mb": 50, "video_quality": 32,
