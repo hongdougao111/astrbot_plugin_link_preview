@@ -31,7 +31,7 @@
     }
   },
   "cooldown": {
-    "description": "同会话冷却秒数",
+    "description": "同会话冷却秒数（多久能再发一次）",
     "type": "int",
     "default": 5,
     "slider": {
@@ -203,5 +203,11 @@
     "type": "bool",
     "default": true,
     "hint": "QQ 小程序卡片里的链接藏在 json 消息段的 meta 里，靠文本匹配扫不到，要单独挖"
+  },
+  "cooldown_hint": {
+    "description": "冷却中提示还剩多久",
+    "type": "bool",
+    "default": true,
+    "hint": "同会话 60 秒内只提示一次，免得刷屏"
   }
 }

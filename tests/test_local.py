@@ -115,6 +115,18 @@ conf_cd = {"cooldown": 60}
 check("第一次放行", pl._cooling("s1", conf_cd), False)
 check("第二次拦住", pl._cooling("s1", conf_cd), True)
 check("冷却 0 不拦", pl._cooling("s1", {"cooldown": 0}), False)
+# 剩余时间与格式化
+pl._last_at = {}
+_pl2 = plugin.LinkPreview.__new__(plugin.LinkPreview)
+_pl2._last_at = {}; _pl2._hint_at = {}
+check("首次能发", _pl2._cooldown_left("x", {"cooldown": 10}), 0)
+left = _pl2._cooldown_left("x", {"cooldown": 10})
+check("立刻再发要等", 1 <= left <= 10, True)
+check("格式化秒", plugin.LinkPreview._fmt_wait(45), "45 秒")
+check("格式化分秒", plugin.LinkPreview._fmt_wait(125), "2 分 5 秒")
+check("格式化整分", plugin.LinkPreview._fmt_wait(120), "2 分钟")
+check("提示节流第一次", _pl2._hint_once("x"), True)
+check("提示节流第二次被压", _pl2._hint_once("x"), False)
 
 # 5. 平台解析器分发
 check("B站直链", resolvers.pick("https://www.bilibili.com/video/BV1GJ411x7h7").__name__, "resolve_bilibili")

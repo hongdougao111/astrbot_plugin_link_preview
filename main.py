@@ -135,6 +135,7 @@ class LinkPreview(Star):
         super().__init__(context)
         self._session: aiohttp.ClientSession | None = None
         self._last_at: dict[str, float] = {}
+        self._hint_at: dict[str, float] = {}
         self._cache_dir: Path | None = None
         self._schema_defaults = self._load_schema_defaults()
         self._state: dict | None = None  # 会话开关，懒加载
@@ -556,7 +557,8 @@ class LinkPreview(Star):
                     comps.append(Comp.Image.fromFileSystem(path))
                 except Exception as e:
                     logger.debug(f"[link_preview] 构造图片组件失败: {e}")
-        return comps
+        # 和 _build_video 一样，返回"消息列表"，每条一个组件列表
+        return [comps]
 
     # ---------- 媒体下载 ----------
 
@@ -783,20 +785,41 @@ class LinkPreview(Star):
                 break
         return found
 
-    def _cooling(self, session_id: str, conf: dict) -> bool:
+    def _cooldown_left(self, session_id: str, conf: dict) -> int:
+        """还要等几秒。0 表示现在能发，并且已经记下这次的时间。"""
         cd = int(conf.get("cooldown") or 0)
         if cd <= 0:
-            return False
+            return 0
         now = time.time()
         last = self._last_at.get(session_id, 0)
-        if now - last < cd:
-            return True
+        left = int(round(cd - (now - last)))
+        if left > 0:
+            return left
         self._last_at[session_id] = now
         # 顺手清掉过期的键，避免长期运行无限增长
         if len(self._last_at) > 2048:
             for k in [k for k, v in self._last_at.items() if now - v > 3600]:
                 self._last_at.pop(k, None)
-        return False
+        return 0
+
+    def _cooling(self, session_id: str, conf: dict) -> bool:
+        """老接口，保留给自测用。"""
+        return self._cooldown_left(session_id, conf) > 0
+
+    @staticmethod
+    def _fmt_wait(seconds: int) -> str:
+        if seconds < 60:
+            return f"{seconds} 秒"
+        m, s = divmod(seconds, 60)
+        return f"{m} 分 {s} 秒" if s else f"{m} 分钟"
+
+    def _hint_once(self, session_id: str, gap: int = 60) -> bool:
+        """冷却提示的节流：同会话 60 秒内只提示一次，免得刷屏。"""
+        now = time.time()
+        if now - self._hint_at.get(session_id, 0) < gap:
+            return False
+        self._hint_at[session_id] = now
+        return True
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_any_message(self, event: AstrMessageEvent):
@@ -820,8 +843,12 @@ class LinkPreview(Star):
         if not urls:
             return
 
-        if self._cooling(event.unified_msg_origin, conf):
-            logger.debug("[link_preview] 会话冷却中，跳过")
+        sid = event.unified_msg_origin
+        left = self._cooldown_left(sid, conf)
+        if left > 0:
+            logger.debug(f"[link_preview] 会话冷却中，还要 {left} 秒")
+            if conf.get("cooldown_hint", True) and self._hint_once(sid):
+                yield event.plain_result(f"刚发过，还要等 {self._fmt_wait(left)}。")
             return
 
         for url in urls:
@@ -966,8 +993,16 @@ class LinkPreview(Star):
             return
 
         here = "开" if self._is_on(sid) else "关"
+        conf = self._conf()
+        cd = int(conf.get("cooldown") or 0)
+        if cd <= 0:
+            wait = "没设冷却，随时能发"
+        else:
+            left = int(round(cd - (time.time() - self._last_at.get(sid, 0))))
+            wait = f"冷却 {cd} 秒，现在能发" if left <= 0 else f"冷却 {cd} 秒，还要等 {self._fmt_wait(left)}"
         yield event.plain_result(
             f"这个会话的自动解析：{here}\n"
+            f"{wait}\n"
             "发 /解析 开来开，发 /解析 关 来关。"
         )
 
