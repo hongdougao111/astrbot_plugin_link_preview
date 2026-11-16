@@ -1,0 +1,167 @@
+{
+  "enabled": {
+    "description": "总开关",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉之后普通消息里的链接不再自动解析，手动指令仍可用"
+  },
+  "whitelist": {
+    "description": "域名白名单",
+    "type": "list",
+    "default": [],
+    "hint": "留空表示全部域名都解析；填了就只解析这些域名及其子域，例如 bilibili.com"
+  },
+  "blacklist": {
+    "description": "域名黑名单",
+    "type": "list",
+    "default": [
+      "t.cn",
+      "url.cn"
+    ],
+    "hint": "这些域名永远不解析，优先级高于白名单"
+  },
+  "max_links": {
+    "description": "单条消息最多解析几个链接",
+    "type": "int",
+    "default": 1,
+    "slider": {
+      "min": 1,
+      "max": 5,
+      "step": 1
+    }
+  },
+  "cooldown": {
+    "description": "同会话冷却秒数",
+    "type": "int",
+    "default": 5,
+    "slider": {
+      "min": 0,
+      "max": 120,
+      "step": 1
+    },
+    "hint": "0 表示不冷却"
+  },
+  "timeout": {
+    "description": "抓取超时秒数",
+    "type": "int",
+    "default": 10,
+    "slider": {
+      "min": 3,
+      "max": 60,
+      "step": 1
+    }
+  },
+  "max_html_kb": {
+    "description": "最多读取多少 KB 的 HTML",
+    "type": "int",
+    "default": 512,
+    "slider": {
+      "min": 64,
+      "max": 4096,
+      "step": 64
+    },
+    "hint": "只读到 </head> 附近就够，调大意义不大"
+  },
+  "send_image": {
+    "description": "附带封面图",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉之后只发文字，流量更省"
+  },
+  "max_image_mb": {
+    "description": "封面图大小上限 MB",
+    "type": "float",
+    "default": 5,
+    "slider": {
+      "min": 1,
+      "max": 20,
+      "step": 0.5
+    }
+  },
+  "desc_length": {
+    "description": "简介截断长度",
+    "type": "int",
+    "default": 120,
+    "slider": {
+      "min": 0,
+      "max": 500,
+      "step": 10
+    },
+    "hint": "0 表示不截断"
+  },
+  "silent_on_fail": {
+    "description": "解析失败时保持沉默",
+    "type": "bool",
+    "default": true,
+    "hint": "关掉之后失败会回一句提示"
+  },
+  "user_agent": {
+    "description": "抓取用的 User-Agent",
+    "type": "string",
+    "default": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+  },
+  "extra_headers": {
+    "description": "额外请求头",
+    "type": "dict",
+    "default": {},
+    "hint": "需要 Cookie 之类的站点可以在这里补"
+  },
+  "stop_llm": {
+    "description": "解析成功后不再让 AI 回复",
+    "type": "bool",
+    "default": false,
+    "hint": "打开之后，带链接的消息只回解析结果，不再触发人格对话"
+  },
+  "insecure_ssl": {
+    "description": "跳过 HTTPS 证书校验",
+    "type": "bool",
+    "default": false,
+    "hint": "有些机器缺 CA 证书库，开了会报 CERTIFICATE_VERIFY_FAILED；只在这类环境下打开"
+  },
+  "platform_resolvers": {
+    "description": "启用平台专用解析",
+    "type": "bool",
+    "default": true,
+    "hint": "B站、网易云、抖音走专用接口，标题和封面更完整；关掉全部走通用 meta"
+  },
+  "douyin_cookie": {
+    "description": "抖音 Cookie（可选）",
+    "type": "string",
+    "default": "",
+    "secret": true,
+    "hint": "抖音不给 Cookie 时只返回页面壳，解析不出来。从浏览器 F12 里复制整条 Cookie 贴这里；不填也能用，只是抖音链接多半拿不到数据"
+  },
+  "download_video": {
+    "description": "B 站链接自动下载视频发出来",
+    "type": "bool",
+    "default": true,
+    "hint": "默认开。关掉之后 B 站链接只回预览不下载"
+  },
+  "max_video_mb": {
+    "description": "视频大小上限 MB",
+    "type": "int",
+    "default": 50,
+    "slider": {
+      "min": 5,
+      "max": 300,
+      "step": 5
+    },
+    "hint": "超过就不下，回退成普通预览。QQ 群文件一般能传几十 MB，太大会被平台拦"
+  },
+  "video_quality": {
+    "description": "视频清晰度",
+    "type": "int",
+    "default": 32,
+    "options": [
+      16,
+      32,
+      64
+    ],
+    "labels": [
+      "360P",
+      "480P",
+      "720P"
+    ],
+    "hint": "不带 B 站 Cookie 时最高只能到 720P。清晰度越高文件越大"
+  }
+}

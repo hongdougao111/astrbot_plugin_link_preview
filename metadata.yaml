@@ -1,0 +1,28 @@
+name: astrbot_plugin_link_preview
+display_name: 链接解析
+short_desc: 聊天里丢链接自动解析成标题、描述和封面图
+desc: |
+  监听聊天消息里的 http/https 链接，抓取页面元信息（og:title / og:description /
+  og:image / title / description），回一条带标题、站点、简介和封面图的消息。
+
+  主要能力：
+  - 白名单 / 黑名单域名过滤，可只放行想解析的站点
+  - 单条消息最多解析几个链接可配
+  - 封面图下载到插件数据目录缓存，规避平台防盗链
+  - 按会话冷却，避免刷屏
+  - 失败可静默，不刷报错
+  - 提供 /解析 <url> 手动指令和 /解析开关 管理员开关
+version: 1.0.0
+author: hongdougao111
+repo: https://github.com/hongdougao111/astrbot_plugin_link_preview
+astrbot_version: ">=4.9.2"
+support_platforms:
+  - aiocqhttp
+  - telegram
+  - discord
+  - lark
+  - slack
+tags:
+  - 工具
+  - 链接
+  - 预览

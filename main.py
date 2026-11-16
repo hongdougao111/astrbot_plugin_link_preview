@@ -1,0 +1,742 @@
+# -*- coding: utf-8 -*-
+"""链接解析插件：把聊天里的链接变成标题 + 简介 + 封面图。
+
+设计要点：
+- 用 aiohttp 异步抓取，绝不阻塞事件循环；
+- 只读 </head> 之前的内容，超大页面不会拖垮内存；
+- 封面图落盘缓存，避免平台侧被防盗链拦掉；
+- 所有异常都在内部消化，插件不因一个坏链接崩掉。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import html as html_lib
+import os
+import re
+import time
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
+
+import aiohttp
+
+from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.star import Context, Star
+import astrbot.api.message_components as Comp
+
+try:  # 正常是作为包加载的
+    from .resolvers import (
+        MediaRef,
+        Preview,
+        bilibili_stream,
+        is_blocked_page,
+        match_bilibili,
+        pick as pick_resolver,
+        resolve_douyin,
+    )
+except ImportError:  # 万一被当独立文件加载
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from resolvers import (
+        MediaRef,
+        Preview,
+        bilibili_stream,
+        is_blocked_page,
+        match_bilibili,
+        pick as pick_resolver,
+        resolve_douyin,
+    )
+
+# 链接提取：遇到空白、尖括号、中文标点、括号即截断，避免把句末符号吃进 URL
+URL_RE = re.compile(r"https?://[^\s<>\"'）)】\]，。；：！？]+", re.IGNORECASE)
+# URL 末尾可能粘上的标点
+TRAILING = ".,;:!?)]}>'\"·…、。"
+
+DEFAULT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+CACHE_TTL = 7 * 24 * 3600  # 图片缓存保留 7 天
+
+
+class _MetaParser(HTMLParser):
+    """只关心 <meta> 和 <title>，遇到 </head> 就收手。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.meta: dict[str, str] = {}
+        self.title: str = ""
+        self._in_title = False
+        self._done = False
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if self._done:
+            return
+        ad = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "meta":
+            key = ad.get("property") or ad.get("name") or ad.get("itemprop")
+            content = ad.get("content", "")
+            if key and content:
+                key = key.strip().lower()
+                # 先到的优先，og 一般排在前面
+                self.meta.setdefault(key, content.strip())
+        elif tag == "title":
+            self._in_title = True
+        elif tag == "body":
+            self._done = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self._in_title = False
+        elif tag == "head":
+            self._done = True
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title and not self.title:
+            text = data.strip()
+            if text:
+                self.title = text
+
+
+def _pick(meta: dict[str, str], *keys: str) -> str:
+    for k in keys:
+        v = meta.get(k)
+        if v:
+            return v
+    return ""
+
+
+def _domain_ok(host: str, patterns: list[str]) -> bool:
+    """host 是否命中某条域名规则（支持子域）。"""
+    host = host.lower().lstrip(".")
+    for raw in patterns:
+        p = str(raw).strip().lower()
+        if not p:
+            continue
+        p = p.removeprefix("http://").removeprefix("https://").split("/")[0].lstrip(".")
+        if not p:
+            continue
+        if host == p or host.endswith("." + p):
+            return True
+    return False
+
+
+class LinkPreview(Star):
+    def __init__(self, context: Context):
+        super().__init__(context)
+        self._session: aiohttp.ClientSession | None = None
+        self._last_at: dict[str, float] = {}
+        self._cache_dir: Path | None = None
+        self._schema_defaults = self._load_schema_defaults()
+        self._state: dict | None = None  # 会话开关，懒加载
+
+    # ---------- 配置 ----------
+
+    def _load_schema_defaults(self) -> dict:
+        """拿不到运行时配置时的兜底，保证插件不会因为读不到配置而空转。"""
+        import json
+
+        path = Path(__file__).parent / "_conf_schema.json"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return {k: v.get("default") for k, v in raw.items() if isinstance(v, dict)}
+        except Exception as e:  # 文件缺失或格式坏了都不致命
+            logger.warning(f"[link_preview] 读取 _conf_schema.json 失败: {e}")
+            return {}
+
+    def _conf(self) -> dict:
+        cfg = None
+        try:
+            cfg = self.get_config()  # v4.9+ Star 提供
+        except Exception:
+            cfg = None
+        if cfg is None:
+            try:
+                cfg = self.context.get_config()
+            except Exception:
+                cfg = None
+        merged = dict(self._schema_defaults)
+        if cfg:
+            try:
+                for k in list(merged.keys()):
+                    v = cfg.get(k, None)
+                    if v is not None:
+                        merged[k] = v
+            except Exception:
+                pass
+        return merged
+
+    # ---------- 会话开关 ----------
+
+    def _state_path(self) -> Path:
+        return self._data_dir() / "state.json"
+
+    def _load_state(self) -> dict:
+        """会话开关存在磁盘上，重启不丢。格式：{"off": ["会话id", ...]}"""
+        if self._state is not None:
+            return self._state
+        import json
+
+        path = self._state_path()
+        data = {"off": [], "on": []}
+        try:
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    for key in ("off", "on"):
+                        if isinstance(raw.get(key), list):
+                            data[key] = [str(x) for x in raw[key]]
+        except Exception as e:
+            logger.warning(f"[link_preview] 读取开关状态失败，按全开处理: {e}")
+        self._state = data
+        return data
+
+    def _save_state(self) -> None:
+        import json
+
+        if self._state is None:
+            return
+        path = self._state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.part")
+            tmp.write_text(json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as e:
+            logger.warning(f"[link_preview] 保存开关状态失败: {e}")
+
+    def _is_on(self, session_id: str) -> bool:
+        """会话自己关过就是关。
+
+        全局 enabled 只当"从没动过开关时的默认值"，不作为硬拦。
+        否则 WebUI 里关掉全局之后，/解析 开会显示成功却还是不干活。
+        """
+        if session_id in self._load_state()["off"]:
+            return False
+        return bool(self._conf().get("enabled", True)) or session_id in self._load_state()["on"]
+
+    def _set_on(self, session_id: str, on: bool) -> None:
+        state = self._load_state()
+        off, onl = state["off"], state["on"]
+        if on:
+            while session_id in off:
+                off.remove(session_id)
+            if session_id not in onl:
+                onl.append(session_id)  # 显式开过，压过全局 enabled
+        else:
+            while session_id in onl:
+                onl.remove(session_id)
+            if session_id not in off:
+                off.append(session_id)
+        self._save_state()
+
+    # ---------- 资源 ----------
+
+    async def _get_session(self, timeout_s: int, insecure: bool = False) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            # insecure 只在用户明确要求时生效：有些机器缺 CA 库，校验一开就全挂
+            conn = aiohttp.TCPConnector(ssl=False) if insecure else None
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=timeout_s, connect=min(timeout_s, 8)),
+                headers={"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
+                connector=conn,
+            )
+            self._session_insecure = insecure
+        elif getattr(self, "_session_insecure", False) != insecure:
+            # 开关变了就重建，避免一个会话里两种策略混着用
+            await self._session.close()
+            self._session = None
+            return await self._get_session(timeout_s, insecure)
+        return self._session
+
+    @staticmethod
+    def _decode(raw: bytes, charset: str | None) -> str:
+        """先按响应头 charset，没有就在头部几十字节里找 meta charset，最后退 utf-8。"""
+        cand = (charset or "").strip().lower()
+        if not cand:
+            head = raw[:2048].decode("ascii", errors="ignore").lower()
+            m = re.search(r'charset\s*=\s*["\']?([a-z0-9_-]+)', head)
+            cand = m.group(1) if m else "utf-8"
+        if cand in ("gb2312", "gbk", "gb18030"):
+            cand = "gb18030"  # 向上兼容，gbk 页面用这个解不会错
+        try:
+            return raw.decode(cand, errors="replace")
+        except LookupError:
+            return raw.decode("utf-8", errors="replace")
+
+    def _data_dir(self) -> Path:
+        """持久化目录，按官方约定放在 data/plugin_data/<插件名>/ 下。"""
+        if self._cache_dir is not None:
+            return self._cache_dir
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+            base = Path(get_astrbot_data_path()) / "plugin_data" / self.name
+        except Exception:
+            base = Path(__file__).parent / "data"
+        base.mkdir(parents=True, exist_ok=True)
+        self._cache_dir = base
+        return base
+
+    def _prune_cache(self) -> None:
+        img_dir = self._data_dir() / "img_cache"
+        if not img_dir.exists():
+            return
+        now = time.time()
+        for f in img_dir.iterdir():
+            try:
+                if f.is_file() and now - f.stat().st_mtime > CACHE_TTL:
+                    f.unlink()
+            except OSError:
+                pass
+
+    # ---------- 抓取与解析 ----------
+
+    async def _fetch_html(self, url: str, conf: dict) -> tuple[str, str] | None:
+        """返回 (最终 URL, HTML 文本)；失败返回 None。"""
+        timeout_s = int(conf.get("timeout") or 10)
+        max_bytes = int(conf.get("max_html_kb") or 512) * 1024
+        headers = {"User-Agent": conf.get("user_agent") or DEFAULT_UA}
+        extra = conf.get("extra_headers")
+        if isinstance(extra, dict):
+            headers.update({str(k): str(v) for k, v in extra.items()})
+
+        insecure = bool(conf.get("insecure_ssl"))
+        session = await self._get_session(timeout_s, insecure)
+        try:
+            async with session.get(url, headers=headers, allow_redirects=True) as resp:
+                if resp.status >= 400:
+                    logger.debug(f"[link_preview] {url} 返回 {resp.status}")
+                    return None
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if ctype and not any(t in ctype for t in ("text/html", "application/xhtml", "text/plain")):
+                    logger.debug(f"[link_preview] {url} 不是 HTML: {ctype}")
+                    return None
+                raw = bytearray()
+                # 边读边判断，读到 </head> 已经够了
+                async for chunk in resp.content.iter_chunked(16384):
+                    raw.extend(chunk)
+                    if len(raw) >= max_bytes:
+                        break
+                    if b"</head>" in chunk.lower():
+                        break
+                return str(resp.url), self._decode(bytes(raw), resp.charset)
+        except asyncio.TimeoutError:
+            logger.debug(f"[link_preview] {url} 超时")
+            return None
+        except aiohttp.ClientError as e:
+            logger.debug(f"[link_preview] {url} 请求失败: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"[link_preview] 抓取 {url} 出现未预期错误: {e}")
+            return None
+
+    async def _parse(self, url: str, conf: dict) -> dict | None:
+        got = await self._fetch_html(url, conf)
+        if not got:
+            return None
+        final_url, text = got
+
+        parser = _MetaParser()
+        try:
+            parser.feed(text[: int(conf.get("max_html_kb") or 512) * 1024])
+            parser.close()
+        except Exception as e:
+            logger.debug(f"[link_preview] HTML 解析失败 {url}: {e}")
+            return None
+
+        meta = parser.meta
+        title = _pick(meta, "og:title", "twitter:title", "title") or parser.title
+        desc = _pick(meta, "og:description", "twitter:description", "description")
+        image = _pick(meta, "og:image", "og:image:url", "twitter:image", "twitter:image:src")
+        site = _pick(meta, "og:site_name", "application-name")
+
+        title = html_lib.unescape(title or "").strip()
+        desc = html_lib.unescape(desc or "").strip()
+        if not title:
+            return None  # 连标题都没有的页面，回出来也没意思
+
+        if is_blocked_page(title):
+            logger.debug(f"[link_preview] {url} 落到风控中间页，放弃")
+            return None
+
+        limit = int(conf.get("desc_length") or 0)
+        if limit > 0 and len(desc) > limit:
+            desc = desc[:limit].rstrip() + "…"
+
+        host = urlparse(final_url).hostname or ""
+        if not site:
+            site = host.removeprefix("www.")
+
+        image_url = urljoin(final_url, image) if image else ""
+        return {
+            "url": final_url,
+            "title": title,
+            "desc": desc,
+            "site": site,
+            "host": host,
+            "image": image_url,
+        }
+
+    async def _cache_image(self, url: str, conf: dict, referer: str = "") -> str | None:
+        """把封面图下载到本地，返回文件路径。失败返回 None。
+
+        referer 必须给对：B 站、抖音的图床都查这个，给错了直接 403。
+        """
+        max_bytes = int(float(conf.get("max_image_mb") or 5) * 1024 * 1024)
+        img_dir = self._data_dir() / "img_cache"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha1(url.encode("utf-8")).hexdigest()
+        for ext in (".jpg", ".png", ".gif", ".webp"):
+            hit = img_dir / (key + ext)
+            if hit.exists() and hit.stat().st_size > 0:
+                return str(hit)
+
+        timeout_s = int(conf.get("timeout") or 10)
+        session = await self._get_session(timeout_s, bool(conf.get("insecure_ssl")))
+        headers = {
+            "User-Agent": conf.get("user_agent") or DEFAULT_UA,
+            "Referer": referer or url,
+        }
+        try:
+            async with session.get(url, headers=headers, allow_redirects=True) as resp:
+                if resp.status >= 400:
+                    return None
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "image" not in ctype:
+                    return None
+                length = resp.headers.get("Content-Length")
+                if length and length.isdigit() and int(length) > max_bytes:
+                    logger.debug(f"[link_preview] 封面图过大: {length} bytes")
+                    return None
+                buf = bytearray()
+                async for chunk in resp.content.iter_chunked(32768):
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        logger.debug("[link_preview] 封面图超过上限，放弃")
+                        return None
+            if not buf:
+                return None
+            if ctype.startswith("image/png"):
+                ext = ".png"
+            elif ctype.startswith("image/gif"):
+                ext = ".gif"
+            elif ctype.startswith("image/webp"):
+                ext = ".webp"
+            else:
+                ext = ".jpg"
+            out = img_dir / (key + ext)
+            tmp = out.with_suffix(out.suffix + ".part")
+            tmp.write_bytes(bytes(buf))
+            tmp.replace(out)
+            return str(out)
+        except Exception as e:
+            logger.debug(f"[link_preview] 下载封面图失败 {url}: {e}")
+            return None
+
+    # ---------- 主流程 ----------
+
+    async def _resolve(self, url: str, conf: dict) -> Preview | None:
+        """专用解析器优先，拿不到再退回通用 meta 抓取。"""
+        if not conf.get("platform_resolvers", True):
+            return None
+        fn = pick_resolver(url)
+        if fn is None:
+            return None
+        timeout_s = int(conf.get("timeout") or 10)
+        session = await self._get_session(timeout_s, bool(conf.get("insecure_ssl")))
+        try:
+            # 抖音解析器额外吃一个 cookie，其余解析器不认这个参数
+            if fn is resolve_douyin:
+                got = await fn(session, url, conf.get("douyin_cookie") or "")
+            else:
+                got = await fn(session, url)
+        except Exception as e:
+            logger.debug(f"[link_preview] 平台解析器处理 {url} 出错: {e}")
+            return None
+        if got:
+            logger.debug(f"[link_preview] {url} 由专用解析器命中: {got.site}")
+        return got
+
+    async def _build_video(self, url: str, conf: dict):
+        """B 站视频：解析 + 下载 + 回一条带视频的消息链。拿不到返回 None。"""
+        if not conf.get("download_video"):
+            return None
+        timeout_s = int(conf.get("timeout") or 10)
+        session = await self._get_session(timeout_s, bool(conf.get("insecure_ssl")))
+        try:
+            got = await bilibili_stream(session, url, int(conf.get("video_quality") or 32))
+        except Exception as e:
+            logger.info(f"[link_preview] 取视频直链失败 {url}: {e}")
+            return None
+        if not got:
+            return None
+        ref, preview = got
+
+        path = await self._download_media(ref, conf)
+        if not path:
+            # 下载失败就退回普通预览，至少别什么都不回
+            return await self._build_plain(preview, conf)
+
+        lines = [f"【{preview.title}】"]
+        if preview.extra:
+            lines.append(preview.extra)
+        lines.append(preview.url)
+        lines.append(f"文件 {os.path.getsize(path) // 1024 // 1024} MB")
+
+        comps = [Comp.Plain("\n".join(lines))]
+        media = self._media_component(path)
+        if media is not None:
+            comps.append(media)
+        return comps
+
+    async def _build_plain(self, info: Preview, conf: dict):
+        """只有文字 + 封面，不下载媒体。"""
+        lines = [f"【{info.title}】"]
+        if info.site and info.site not in info.title:
+            lines.append(f"来源：{info.site}")
+        if info.extra:
+            lines.append(info.extra)
+        if info.desc:
+            lines.append(info.desc)
+        lines.append(info.url)
+        comps = [Comp.Plain("\n".join(lines))]
+        if conf.get("send_image") and info.image:
+            path = await self._cache_image(info.image, conf, info.referer)
+            if path:
+                try:
+                    comps.append(Comp.Image.fromFileSystem(path))
+                except Exception as e:
+                    logger.debug(f"[link_preview] 构造图片组件失败: {e}")
+        return comps
+
+    async def _build_chain(self, url: str, conf: dict):
+        if conf.get("download_video") and match_bilibili(url):
+            try:
+                video_chain = await self._build_video(url, conf)
+            except Exception as e:
+                logger.warning(f"[link_preview] 视频流程异常 {url}: {e}")
+                video_chain = None
+            if video_chain:
+                return video_chain
+
+        info = await self._resolve(url, conf)
+        if info:
+            return await self._build_plain(info, conf)
+
+        # 回落：通用 meta 解析
+        info = await self._parse(url, conf)
+        if not info:
+            return None
+
+        lines = [f"【{info['title']}】"]
+        if info["site"] and info["site"] not in info["title"]:
+            lines.append(f"来源：{info['site']}")
+        if info["desc"]:
+            lines.append(info["desc"])
+        lines.append(info["url"])
+
+        comps = [Comp.Plain("\n".join(lines))]
+        if conf.get("send_image") and info["image"]:
+            path = await self._cache_image(info["image"], conf)
+            if path:
+                try:
+                    comps.append(Comp.Image.fromFileSystem(path))
+                except Exception as e:
+                    logger.debug(f"[link_preview] 构造图片组件失败: {e}")
+        return comps
+
+    # ---------- 媒体下载 ----------
+
+    async def _download_media(self, ref, conf: dict) -> str | None:
+        """把媒体流式下载到本地，返回文件路径。超过上限就中止并删掉半个文件。"""
+        max_bytes = int(float(conf.get("max_video_mb") or 50) * 1024 * 1024)
+        media_dir = self._data_dir() / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        key = ref.cache_key or hashlib.sha1(ref.url.encode("utf-8")).hexdigest()[:16]
+        # 文件名只留安全字符，bvid 里可能有大小写字母和数字，直接拼没问题
+        key = re.sub(r"[^0-9A-Za-z_.-]", "_", key)
+        out = media_dir / f"{key}{ref.ext}"
+        if out.exists() and out.stat().st_size > 0:
+            return str(out)  # 同一个视频不重复下载
+
+        if ref.size and ref.size > max_bytes:
+            logger.info(
+                f"[link_preview] 媒体 {ref.size // 1024 // 1024}MB 超过上限 "
+                f"{max_bytes // 1024 // 1024}MB，跳过"
+            )
+            return None
+
+        timeout_s = max(int(conf.get("timeout") or 10), 30)
+        session = await self._get_session(timeout_s, bool(conf.get("insecure_ssl")))
+        headers = {"User-Agent": conf.get("user_agent") or DEFAULT_UA}
+        if ref.referer:
+            headers["Referer"] = ref.referer
+
+        tmp = out.with_suffix(out.suffix + ".part")
+        got = 0
+        try:
+            async with session.get(ref.url, headers=headers, allow_redirects=True) as resp:
+                if resp.status >= 400:
+                    logger.info(f"[link_preview] 媒体下载失败，HTTP {resp.status}")
+                    return None
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if ctype and not any(t in ctype for t in ("video", "audio", "octet-stream")):
+                    logger.info(f"[link_preview] 媒体响应不是音视频: {ctype}")
+                    return None
+                with tmp.open("wb") as fh:
+                    async for chunk in resp.content.iter_chunked(65536):
+                        fh.write(chunk)
+                        got += len(chunk)
+                        if got > max_bytes:
+                            raise ValueError("超过大小上限")
+            if got == 0:
+                tmp.unlink(missing_ok=True)
+                return None
+            tmp.replace(out)
+            logger.info(f"[link_preview] 媒体已下载 {out.name} {got // 1024} KB")
+            return str(out)
+        except ValueError:
+            logger.info(f"[link_preview] 媒体超过 {max_bytes // 1024 // 1024}MB，中止")
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        except asyncio.TimeoutError:
+            logger.info("[link_preview] 媒体下载超时")
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        except Exception as e:
+            logger.info(f"[link_preview] 媒体下载出错: {e}")
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+
+    def _media_component(self, path: str):
+        """把本地文件包成消息组件。视频优先，装不上就退回文件。"""
+        try:
+            return Comp.Video.fromFileSystem(path=path)
+        except Exception as e:
+            logger.debug(f"[link_preview] Video 组件不可用，退回 File: {e}")
+        try:
+            return Comp.File(file=path, name=os.path.basename(path))
+        except Exception as e:
+            logger.warning(f"[link_preview] 构造媒体组件失败: {e}")
+            return None
+
+    def _take_urls(self, text: str, conf: dict) -> list[str]:
+        found: list[str] = []
+        seen: set[str] = set()
+        for m in URL_RE.finditer(text or ""):
+            u = m.group(0).rstrip(TRAILING)
+            if not u or u in seen:
+                continue
+            host = urlparse(u).hostname or ""
+            if not host:
+                continue
+            black = conf.get("blacklist") or []
+            white = conf.get("whitelist") or []
+            if _domain_ok(host, black):
+                continue
+            if white and not _domain_ok(host, white):
+                continue
+            seen.add(u)
+            found.append(u)
+            if len(found) >= int(conf.get("max_links") or 1):
+                break
+        return found
+
+    def _cooling(self, session_id: str, conf: dict) -> bool:
+        cd = int(conf.get("cooldown") or 0)
+        if cd <= 0:
+            return False
+        now = time.time()
+        last = self._last_at.get(session_id, 0)
+        if now - last < cd:
+            return True
+        self._last_at[session_id] = now
+        # 顺手清掉过期的键，避免长期运行无限增长
+        if len(self._last_at) > 2048:
+            for k in [k for k, v in self._last_at.items() if now - v > 3600]:
+                self._last_at.pop(k, None)
+        return False
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_any_message(self, event: AstrMessageEvent):
+        """自动解析：注意不要用 filter.regex，避免和其他插件的正则抢消息。"""
+        conf = self._conf()
+        if not self._is_on(event.unified_msg_origin):
+            return
+
+        # 机器人自己发的消息不处理，防止自激
+        try:
+            if event.get_sender_id() == event.get_self_id():
+                return
+        except Exception:
+            pass
+
+        text = event.message_str or ""
+        if "http" not in text:
+            return
+
+        urls = self._take_urls(text, conf)
+        if not urls:
+            return
+
+        if self._cooling(event.unified_msg_origin, conf):
+            logger.debug("[link_preview] 会话冷却中，跳过")
+            return
+
+        for url in urls:
+            try:
+                chain = await self._build_chain(url, conf)
+            except Exception as e:
+                logger.warning(f"[link_preview] 处理 {url} 异常: {e}")
+                chain = None
+            if chain:
+                yield event.chain_result(chain)
+                if conf.get("stop_llm"):
+                    event.stop_event()  # 由插件接管，不再走 AI 回复
+            elif not conf.get("silent_on_fail", True):
+                yield event.plain_result(f"这个链接没能解析出来：{url}")
+
+    # ---------- 指令 ----------
+
+    @filter.command("解析")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def toggle_cmd(self, event: AstrMessageEvent, action: str = ""):
+        """开关自动解析：/解析 开 | /解析 关 | /解析"""
+        sid = event.unified_msg_origin
+        act = (action or "").strip().lower()
+
+        if act in ("开", "on", "1", "开启", "打开"):
+            self._set_on(sid, True)
+            yield event.plain_result("好，这个会话的自动解析开了。发链接就行。")
+            return
+        if act in ("关", "off", "0", "关闭", "关掉"):
+            self._set_on(sid, False)
+            yield event.plain_result("关了这个会话的自动解析。要开回来发 /解析 开。")
+            return
+
+        here = "开" if self._is_on(sid) else "关"
+        yield event.plain_result(
+            f"这个会话的自动解析：{here}\n"
+            "发 /解析 开来开，发 /解析 关 来关。"
+        )
+
+    async def terminate(self):
+        """插件卸载/停用时释放连接池。"""
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
