@@ -1,17 +1,26 @@
 name: astrbot_plugin_link_preview
 display_name: 链接解析
-short_desc: 聊天里丢链接自动解析成标题、描述和封面图
+short_desc: 聊天里丢链接自动解析，B站视频直接下下来发群
 desc: |
-  监听聊天消息里的 http/https 链接，抓取页面元信息（og:title / og:description /
-  og:image / title / description），回一条带标题、站点、简介和封面图的消息。
+  发链接就行，不用打指令。B 站链接会把视频下载下来直接发出去，
+  其他链接回标题、来源、简介和封面图。
+
+  平台支持：
+  - 哔哩哔哩：走官方 x/web-interface/view + x/player/playurl 接口，
+    拿 durl 合并流（音视频已并好），标题、UP 主、时长齐全，支持 b23.tv 短链
+  - 网易云音乐：走 api/song/detail，歌名、歌手、专辑、封面
+  - 其他网页：og:title / og:description / og:image / title / description
+  - 抖音：需要配置 douyin_cookie，无 Cookie 时分享页只下发页面壳，解析不出来
 
   主要能力：
-  - 白名单 / 黑名单域名过滤，可只放行想解析的站点
-  - 单条消息最多解析几个链接可配
-  - 封面图下载到插件数据目录缓存，规避平台防盗链
-  - 按会话冷却，避免刷屏
-  - 失败可静默，不刷报错
-  - 提供 /解析 <url> 手动指令和 /解析开关 管理员开关
+  - 视频流式下载，边收边写边数字节，超上限立刻中止，不会写满磁盘
+  - 封面图落盘缓存，规避平台防盗链（B 站、抖音图床都查 Referer）
+  - 缓存键用 bvid + 清晰度，直链签名变化不会重复下载
+  - 按会话开关，一个群关掉不影响别的群，状态落盘重启不丢
+  - 域名白名单 / 黑名单、单条消息解析数量、会话冷却都可配
+  - 失败静默，不刷报错
+
+  指令只有两个（管理员）：/解析 看状态，/解析 开|关 切换。
 version: 1.0.0
 author: hongdougao111
 repo: https://github.com/hongdougao111/astrbot_plugin_link_preview
@@ -26,3 +35,5 @@ tags:
   - 工具
   - 链接
   - 预览
+  - 视频下载
+  - B站
