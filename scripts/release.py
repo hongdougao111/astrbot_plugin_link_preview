@@ -71,6 +71,7 @@ def main() -> int:
     ap.add_argument("--no-push", action="store_true", help="打包打 tag，但不推送")
     ap.add_argument("--gh", help="gh 可执行文件路径")
     ap.add_argument("--git", help="git 可执行文件路径")
+    ap.add_argument("--notes-file", help="Release 说明文件，不给就用 GitHub 自动生成的")
     args = ap.parse_args()
 
     tag = f"v{args.version}"
@@ -165,10 +166,15 @@ def main() -> int:
 
     base = [gh, "release"]
     if chk.returncode == 0:
+        if args.notes_file:
+            run([*base, "edit", tag, "--notes-file", args.notes_file,
+                 *(["--repo", f"{slug[0]}/{slug[1]}"] if slug else [])], check=False)
+            print("    Release 说明已更新")
         r = run([*base, "upload", tag, str(out), "--clobber", *(["--repo", f"{slug[0]}/{slug[1]}"] if slug else [])], check=False)
         print("    Release 已存在，附件已更新")
     else:
-        r = run([*base, "create", tag, str(out), "--title", f"链接解析 {tag}", "--generate-notes",
+        notes = ["--notes-file", args.notes_file] if args.notes_file else ["--generate-notes"]
+        r = run([*base, "create", tag, str(out), "--title", f"链接解析 {tag}", *notes,
                  *(["--repo", f"{slug[0]}/{slug[1]}"] if slug else [])], check=False)
         print("    Release 已创建")
     if r.returncode != 0:
