@@ -156,7 +156,7 @@ def main() -> int:
     print(f"    gh: {gh}")
 
     # 已经存在就补资产，不重复建
-    chk = run([gh, "release", "view", tag, "--repo-from-origin"], check=False, capture=True)
+    chk = run([gh, "release", "view", tag], check=False, capture=True)
     if chk.returncode == 0:
         print(f"    Release {tag} 已存在，上传附件")
         run([gh, "release", "upload", tag, str(out), "--clobber"], check=False)
