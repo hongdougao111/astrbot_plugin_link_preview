@@ -130,3 +130,23 @@ python tests/test_local.py
 - 只认 `<meta>` 和 `<title>`。SPA 那种首屏没有 meta 的站点解析不出来，需要针对性适配。
 - 不做 JS 渲染。
 - B 站 / 微博这类需要走 API 的站点不在范围内，只出通用 meta。
+
+## 发版
+
+版本号只有一个来源：`metadata.yaml` 的 `version`。tag 必须跟它对齐。
+
+```bash
+python scripts/check_version.py           # 只看 metadata 合不合法
+python scripts/check_version.py v1.1.0    # 和指定 tag 对比
+python scripts/check_version.py --bump patch   # 1.0.0 -> 1.0.1
+```
+
+推 `v*` 标签时会自动校验，对不上直接拦下（`core.hooksPath` 指向 `.githooks`）。
+
+一键发版：
+
+```bash
+sh scripts/release.sh 1.1.0
+```
+
+它会依次校验版本、检查工作区、打包、打 tag 推送、建 Release。
