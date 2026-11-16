@@ -141,12 +141,15 @@ python scripts/check_version.py v1.1.0    # 和指定 tag 对比
 python scripts/check_version.py --bump patch   # 1.0.0 -> 1.0.1
 ```
 
-推 `v*` 标签时会自动校验，对不上直接拦下（`core.hooksPath` 指向 `.githooks`）。
-
 一键发版：
 
 ```bash
-sh scripts/release.sh 1.1.0
+python scripts/release.py 1.1.0
 ```
 
-它会依次校验版本、检查工作区、打包、打 tag 推送、建 Release。
+依次做：校验版本 → 检查工作区干净 → 打包 → 打 tag → 推送 → 建 Release。
+加 `--no-push` 只打包打 tag 不推。
+
+**为什么不用 git hook**：这台机器的 git for Windows 起不了 sh，
+报 `couldn't create signal pipe, Win32 error 5`，任何 shell 钩子都跑不起来。
+所以校验放进 `release.py`，发版必经此路。手动 `git push` 绕过去它管不着。
