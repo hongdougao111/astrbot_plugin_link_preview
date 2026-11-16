@@ -125,15 +125,26 @@ def main() -> int:
         return 0
 
     print("== 5/5 推送并建 Release")
-    push_cmd = [git, *SSH_BYPASS, "push", "origin", tag]
+    gh = find_gh()
+    # origin 里没有凭据，push 会去敲门要密码。有 gh 就把它的 token 拼进 URL。
+    remote_url = None
+    if gh:
+        tok = run([gh, "auth", "token"], check=False, capture=True)
+        if tok.returncode == 0 and tok.stdout.strip():
+            remote_url = (
+                "https://x-access-token:"
+                f"{tok.stdout.strip()}@github.com/"
+                "hongdougao111/astrbot_plugin_link_preview.git"
+            )
+
+    push_cmd = [git, *SSH_BYPASS, "push", remote_url or "origin", tag]
     r = run(push_cmd, check=False)
     if r.returncode != 0:
-        print("    推送失败。这台机器的 git 传输层有 schannel 问题，")
-        print("    试试手动：")
-        print(f"    {git} {' '.join(SSH_BYPASS)} push origin {tag}")
+        print("    推送失败，重试一次")
+        r = run(push_cmd, check=False)
+    if r.returncode != 0:
+        print(f"    还是没推上去。手动：{git} {' '.join(SSH_BYPASS)} push origin {tag}")
         return 1
-
-    gh = find_gh()
     if not gh:
         print("    找不到 gh，跳过 Release 创建。标签已经推上去了。")
         return 0
