@@ -205,6 +205,44 @@ check("坏模板不炸", "480P" in _p3._download_notice(_prev, _ref,
       {"video_quality": 32, "download_notice": "{不存在}"}), True)
 check("大小未知时不写", "约" in _p3._download_notice(_prev, resolvers.MediaRef(url="x", size=0), {"video_quality": 32}), False)
 
+# 8.7 XML 卡片（Lagrange / 老版 go-cqhttp 下发，上游 ComponentTypes 没有 xml 类型）
+_p4 = plugin.LinkPreview.__new__(plugin.LinkPreview)
+_p4._last_at = {}
+_xml_attr = '<msg serviceID="1" url="https://b23.tv/AbCdEf" brief="哔哩哔哩"/>'
+_xml_tag = "<msg><item><qqdocurl>https://www.bilibili.com/video/BV1xx411c7mD</qqdocurl></item></msg>"
+check("XML 属性式", _p4._urls_from_xml(_xml_attr), ["https://b23.tv/AbCdEf"])
+check("XML 标签式", _p4._urls_from_xml(_xml_tag), ["https://www.bilibili.com/video/BV1xx411c7mD"])
+check("XML 转义还原", _p4._urls_from_xml('<msg url="https://a.cn/x?p=1&amp;t=2"/>'), ["https://a.cn/x?p=1&t=2"])
+check("XML 无关不误报", _p4._urls_from_xml("<msg serviceID='1'/>"), [])
+
+
+class _Raw:
+    def __init__(self, message):
+        self.message = message
+
+
+class _MO:
+    def __init__(self, chain, raw):
+        self.message = chain
+        self.raw_message = raw
+
+
+class _Ev:
+    def __init__(self, chain, raw):
+        self.message_obj = _MO(chain, raw) if raw is not None else None
+
+
+check("raw_message 兜底（xml 段被上游丢掉）",
+      _p4._scan_raw_message(_Ev([], _Raw([{"type": "xml", "data": {"xml": _xml_attr}}]))),
+      ["https://b23.tv/AbCdEf"])
+check("raw 是 dict 形式",
+      _p4._scan_raw_message(_Ev([], _Raw({"message": [{"type": "xml", "data": {"xml": _xml_tag}}]}))),
+      ["https://www.bilibili.com/video/BV1xx411c7mD"])
+check("CQ 码字符串形式",
+      _p4._scan_raw_message(_Ev([], _Raw("[CQ:xml,data=&lt;msg url=&quot;https://b23.tv/CQ&quot;/&gt;]"))),
+      ["https://b23.tv/CQ"])
+check("没有 message_obj 不炸", _p4._scan_raw_message(_Ev([], None)), [])
+
 # 9. 消息分段：video 必须独占一条（OneBot retcode 1400 的约束）
 async def _seg_check():
     conf = {"download_video": True, "timeout": 25, "max_video_mb": 50, "video_quality": 32,

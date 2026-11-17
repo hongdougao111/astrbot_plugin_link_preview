@@ -1,5 +1,22 @@
 # 更新日志
 
+## v1.1.4
+
+### 修复
+
+- **结构消息卡片（`xml` 段）解析不出来**。AstrBot 的 `ComponentTypes` 没有 `xml`，
+  上游直接 `logger.warning('不支持的消息段类型，已忽略')` 整段丢掉，
+  `message_obj.message` 里看不到。现在额外读 `message_obj.raw_message` 的原始
+  `message` 数组，直接扫 `xml` 段，同时兼容 CQ 码字符串格式。
+- 支持 XML 的两种写法：属性式 `url="..."` 和标签式 `<qqdocurl>...</qqdocurl>`，
+  带 XML 转义和 `\/` 转义都能还原
+
+### 新增
+
+- `debug_segments` 配置：解析不到链接时把消息链和 raw 段的类型打进日志，
+  一眼看出卡片是以什么形式到的
+
+
 ## v1.1.3
 
 ### 新增

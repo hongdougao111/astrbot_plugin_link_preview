@@ -714,15 +714,117 @@ class LinkPreview(Star):
             logger.debug(f"[link_preview] 解析卡片失败: {e}")
         return found
 
+    # XML 卡片（Lagrange / go-cqhttp 老版下发形如
+    # <msg serviceID="1" url="https://..." brief="...">...</msg>）
+    _XML_ATTR_URL = re.compile(r"""(?:url|qqdocurl|jumpUrl)\s*=\s*["']([^"']+)["']""", re.I)
+    _XML_TAG_URL = re.compile(r"<(?:qqdocurl|jumpUrl|url)>\s*(https?://[^<\s]+)\s*</", re.I)
+
+    def _urls_from_xml(self, text: str) -> list[str]:
+        """从 XML 卡片里抠 URL。属性式和标签式两种都认。"""
+        if not text or len(text) > 200000:
+            return []
+        found: list[str] = []
+        for rx in (self._XML_ATTR_URL, self._XML_TAG_URL):
+            for m in rx.finditer(text):
+                v = html_lib.unescape(m.group(1)).strip()
+                # XML 里常见转义 &amp; 和 \/ 两种写法
+                v = v.replace("\\/", "/")
+                if v.startswith("http") and v not in found and "qq.com" not in v:
+                    found.append(v)
+                if len(found) >= 3:
+                    return found
+        return found
+
+    def _scan_raw_message(self, event) -> list[str]:
+        """从原始 OneBot 事件里扫卡片。
+
+        AstrBot 的 ComponentTypes 里没有 "xml" 这个类型（上游 components.py 只到
+        json/unknown），协议端下发 xml 段时会被整段丢弃，消息链里根本看不到。
+        所以这里回到 event.message_obj.raw_message 读原样的 message 数组。
+        """
+        obj = getattr(event, "message_obj", None)
+        raw = getattr(obj, "raw_message", None) if obj else None
+        if raw is None:
+            return []
+
+        segments = None
+        try:
+            segments = getattr(raw, "message", None)
+            if segments is None and isinstance(raw, dict):
+                segments = raw.get("message")
+            # 有的实现把整个事件对象塞进 raw.message，再取一层
+            for _ in range(2):
+                if isinstance(segments, dict):
+                    segments = segments.get("message")
+                else:
+                    break
+        except Exception:
+            segments = None
+
+        out: list[str] = []
+
+        def take(text):
+            for u in self._urls_from_xml(text):
+                if u not in out:
+                    out.append(u)
+
+        if isinstance(segments, list):
+            for seg in segments:
+                try:
+                    data = seg.get("data") if isinstance(seg, dict) else getattr(seg, "data", None)
+                    if not isinstance(data, dict):
+                        continue
+                    for key in ("xml", "json", "content"):
+                        val = data.get(key)
+                        if isinstance(val, str) and val:
+                            take(val)
+                except Exception:
+                    continue
+        elif isinstance(segments, str):
+            # CQ 码格式（post-format: string），把 [CQ:xml,data=...] 解出来
+            for m in re.finditer(r"\[CQ:(?:xml|json),([^\]]+)\]", segments):
+                payload = html_lib.unescape(m.group(1))
+                take(payload)
+        return out
+
+    def _log_segments(self, event) -> None:
+        """把消息链和原始事件的段类型打到日志，排查"为什么没解析"用。"""
+        obj = getattr(event, "message_obj", None)
+        chain = getattr(obj, "message", None) if obj else None
+        kinds = []
+        for comp in (chain or []):
+            try:
+                t = getattr(comp, "type", "")
+                kinds.append(str(getattr(t, "value", t)))
+            except Exception:
+                kinds.append("?")
+
+        raw_kinds = []
+        raw = getattr(obj, "raw_message", None) if obj else None
+        segs = getattr(raw, "message", None) if raw is not None else None
+        if isinstance(segs, dict):
+            segs = segs.get("message")
+        if isinstance(segs, list):
+            for seg in segs:
+                try:
+                    raw_kinds.append(seg.get("type") if isinstance(seg, dict) else type(seg).__name__)
+                except Exception:
+                    raw_kinds.append("?")
+        elif isinstance(segs, str):
+            raw_kinds.append(f"str({len(segs)})")
+
+        logger.info(
+            f"[link_preview] 没找到链接 | message_str={ (event.message_str or '')[:60]!r} "
+            f"| 消息链={kinds} | raw 段={raw_kinds}"
+        )
+
     def _take_card_urls(self, event, conf: dict) -> list[str]:
         """扫消息链里的小程序 / 分享卡片。message_str 只有纯文本，卡片不在里面。"""
         obj = getattr(event, "message_obj", None)
         chain = getattr(obj, "message", None) if obj else None
-        if not chain:
-            return []
 
         out: list[str] = []
-        for comp in chain:
+        for comp in (chain or []):
             try:
                 raw_type = getattr(comp, "type", "")
                 type_name = getattr(raw_type, "value", raw_type)
@@ -771,6 +873,21 @@ class LinkPreview(Star):
             if white and not _domain_ok(host, white):
                 continue
             allowed.append(u)
+
+        # 消息链里没有（xml 段被上游丢了），回到原始事件再扫一遍
+        if not allowed:
+            for u in self._scan_raw_message(event):
+                host = urlparse(u).hostname or ""
+                if not host:
+                    continue
+                if _domain_ok(host, conf.get("blacklist") or []):
+                    continue
+                white = conf.get("whitelist") or []
+                if white and not _domain_ok(host, white):
+                    continue
+                if u not in allowed:
+                    allowed.append(u)
+
         return allowed[: int(conf.get("max_links") or 1)]
 
     def _take_urls(self, text: str, conf: dict) -> list[str]:
@@ -851,6 +968,9 @@ class LinkPreview(Star):
         if not urls and conf.get("parse_cards", True):
             urls = self._take_card_urls(event, conf)
         if not urls:
+            # 排查用：把这条消息的段类型摊开，一眼看出卡片是以什么形式到的
+            if conf.get("debug_segments"):
+                self._log_segments(event)
             return
 
         sid = event.unified_msg_origin

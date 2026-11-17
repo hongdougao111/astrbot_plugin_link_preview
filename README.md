@@ -182,6 +182,44 @@ OneBot 的 json 段常把整段再包一层（`{"data": "<JSON 字符串>"}`）�
 **顺序**：先解析拿元信息（0.2 秒），发提示，再下载，最后发文字+视频。
 所以提示是**真的**先到，不是下载完才一起发。
 
+
+## 卡片解析的三种形态
+
+QQ 转发卡片到 OneBot 这边有三种走法，插件都认：
+
+| 形态 | 消息段 | 怎么取 |
+| --- | --- | --- |
+| 小程序卡片 | `json` | `meta.detail_1.qqdocurl` / `meta.news.jumpUrl` |
+| 链接分享 | `share` | 组件的 `url` 字段，直接给 |
+| 结构消息卡片 | `xml` | 正则抠 `url=` / `<qqdocurl>` 标签 |
+
+**第三种是最坑的。** AstrBot 的 `ComponentTypes` 里根本没有 `xml` 这个类型——
+上游 `components.py` 只到 `json` 和 `unknown`。协议端下发 `xml` 段时：
+
+```
+logger.warning(f"不支持的消息段类型，已忽略: {t}, data={m['data']}")
+```
+
+整段被丢，`message_obj.message` 里根本看不到它。所以插件会额外读
+`message_obj.raw_message` 的原始 `message` 数组，直接扫 `xml` 段内容。
+
+还兼容 CQ 码字符串格式（`post-format: string`）：
+
+```
+[CQ:xml,data=&lt;msg url=&quot;https://...&quot;/&gt;]
+```
+
+### 还是没反应怎么办
+
+配置里把 `debug_segments` 打开。解析不到链接时日志会打这么一行：
+
+```
+[link_preview] 没找到链接 | message_str='...' | 消息链=['plain'] | raw 段=['xml']
+```
+
+`消息链` 里没有、`raw 段` 里有 → 说明走的是被上游丢弃的那条路；
+两边都没有 → 卡片根本没到机器人这边，是协议端没转发。
+
 ## 自测
 
 不用装 AstrBot：

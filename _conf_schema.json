@@ -221,5 +221,11 @@
     "type": "string",
     "default": "",
     "hint": "留空用默认的「解析成功，已选 480P，正在下载，约 12 MB，稍后发你～」。可用 {title} {quality} {size} 三个占位符"
+  },
+  "debug_segments": {
+    "description": "排查模式：记录消息段类型",
+    "type": "bool",
+    "default": false,
+    "hint": "卡片解析不出来时打开，日志里会打出这条消息到底是什么段，方便定位"
   }
 }
