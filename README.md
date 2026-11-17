@@ -220,6 +220,29 @@ logger.warning(f"不支持的消息段类型，已忽略: {t}, data={m['data']}"
 `消息链` 里没有、`raw 段` 里有 → 说明走的是被上游丢弃的那条路；
 两边都没有 → 卡片根本没到机器人这边，是协议端没转发。
 
+
+### 还是不行：最后一道兜底
+
+v1.1.5 加了暴力扫描：把整个事件对象递归摊平，不管卡片藏在哪个字段、
+被包了几层、是不是 JSON 转义（`https:\/\/`），只要能摊成字符串就挖出来。
+
+```
+消息链 → json 段 → share 段 → raw_message 的 message 数组
+      → CQ 码字符串 → 整个事件递归摊平（深度 8，防循环引用）
+```
+
+会过滤噪音域名（头像、CDN、QQ 内部链接）：
+
+```
+qpic.cn  qlogo.cn  qq.com  gtimg.cn  weixin.qq.com
+douyinpic.com  hdslb.com  bilivideo.com  …
+```
+
+兜底命中时日志会写一行 `[link_preview] 暴力扫描兜底命中: <url>`。
+
+如果连这个都没命中，把 `debug_segments` 打开后日志里的 `DUMP raw_message=` 那行发我，
+那是事件对象的完整结构，照着它就能加出针对性适配。
+
 ## 自测
 
 不用装 AstrBot：

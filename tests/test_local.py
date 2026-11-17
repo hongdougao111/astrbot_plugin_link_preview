@@ -243,6 +243,48 @@ check("CQ 码字符串形式",
       ["https://b23.tv/CQ"])
 check("没有 message_obj 不炸", _p4._scan_raw_message(_Ev([], None)), [])
 
+# 8.8 暴力兜底扫描（卡片藏在任何地方都能挖出来）
+_p5 = plugin.LinkPreview.__new__(plugin.LinkPreview)
+_p5._last_at = {}
+_BILI = "https://www.bilibili.com/video/BV1GJ411x7h7"
+
+
+def _mkraw(**kw):
+    return types.SimpleNamespace(**kw)
+
+
+check("噪音域名不认作内容", _p5._is_content_url("https://q1.qlogo.cn/g?b=qq"), False)
+check("图床不认作内容", _p5._is_content_url("https://i0.hdslb.com/x.jpg"), False)
+check("B站视频认作内容", _p5._is_content_url(_BILI), True)
+
+# 藏在一个奇怪属性名里
+_ev = _mkraw(message_obj=_mkraw(message=[], raw_message=_mkraw(message="", prompt=f"[卡片] {_BILI}")))
+check("任意属性里的链接", _p5._scan_everything(_ev), [_BILI])
+
+# JSON 转义写法 https:\/\/
+_esc = _BILI.replace("/", "\\/")
+_ev2 = _mkraw(message_obj=_mkraw(message=[], raw_message=_mkraw(message=[{"type": "xml", "data": {"xml": _esc}}])))
+check("反斜杠转义能还原", _p5._scan_everything(_ev2), [_BILI])
+
+# 深层嵌套
+_ev3 = _mkraw(message_obj=_mkraw(message=[], raw_message={"a": {"b": {"c": [{"d": _BILI}]}}}))
+check("深层嵌套 dict", _p5._scan_everything(_ev3), [_BILI])
+
+# 噪音和内容混在一起，只留内容
+_ev4 = _mkraw(message_obj=_mkraw(message=[], raw_message=_mkraw(message=f"https://q1.qlogo.cn/x.jpg {_BILI} https://gtimg.cn/y.png")))
+check("过滤噪音保留内容", _p5._scan_everything(_ev4), [_BILI])
+
+# 循环引用不能死循环
+class _Loop:
+    pass
+
+
+_lp = _Loop()
+_lp.self_ref = _lp
+_lp.msg = "https://example.com/a"
+check("循环引用不卡死", _p5._scan_everything(_mkraw(message_obj=_mkraw(message=[], raw_message=_lp))),
+      ["https://example.com/a"])
+
 # 9. 消息分段：video 必须独占一条（OneBot retcode 1400 的约束）
 async def _seg_check():
     conf = {"download_video": True, "timeout": 25, "max_video_mb": 50, "video_quality": 32,

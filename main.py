@@ -787,6 +787,99 @@ class LinkPreview(Star):
                 take(payload)
         return out
 
+    # 这些域名的 URL 一定不是用户想解析的内容（头像、CDN、QQ 内部）
+    _NOISE_HOSTS = (
+        "qpic.cn", "qlogo.cn", "qq.com", "gtimg.cn", "qcloud.com",
+        "weixin.qq.com", "tenpay.com", "qidian.com", "myqcloud.com",
+        "byteimg.com", "douyinpic.com", "bilivideo.com", "hdslb.com",
+    )
+
+    def _is_content_url(self, u: str) -> bool:
+        """过滤掉头像、CDN、QQ 内部链接这类噪音。"""
+        try:
+            host = (urlparse(u).hostname or "").lower()
+        except Exception:
+            return False
+        if not host:
+            return False
+        for noise in self._NOISE_HOSTS:
+            if host == noise or host.endswith("." + noise):
+                return False
+        # 太短的路径基本是资源文件，不是内容页
+        return len(u) < 500
+
+    def _scan_everything(self, event, depth_limit: int = 8) -> list[str]:
+        """最后一道兜底：把整个事件对象递归摊平，暴力找 http 链接。
+
+        不管卡片藏在哪个字段、被包了几层，只要能摊成字符串就逃不掉。
+        """
+        found: list[str] = []
+
+        def walk(node, depth=0, seen=None):
+            if depth > depth_limit or len(found) >= 5:
+                return
+            if seen is None:
+                seen = set()
+            if id(node) in seen:
+                return
+            seen.add(id(node))
+            if isinstance(node, str):
+                # JSON / XML 里链接常被转义成 https:\/\/ 或带 &amp;
+                text = node.replace("\\/", "/")
+                for m in URL_RE.finditer(text):
+                    u = m.group(0).rstrip(TRAILING + "\\")
+                    u = html_lib.unescape(u).rstrip(TRAILING + "\\")
+                    if self._is_content_url(u) and u not in found:
+                        found.append(u)
+                return
+            if isinstance(node, dict):
+                for v in node.values():
+                    walk(v, depth + 1, seen)
+                return
+            if isinstance(node, (list, tuple, set)):
+                for v in node:
+                    walk(v, depth + 1, seen)
+                return
+            # 普通对象：先看有没有 __dict__，再看常用字段
+            for attr in ("message", "data", "raw_message", "raw", "content", "xml", "json"):
+                try:
+                    v = getattr(node, attr, None)
+                    if v is not None:
+                        walk(v, depth + 1, seen)
+                except Exception:
+                    continue
+            d = getattr(node, "__dict__", None)
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    if k.startswith("_") or k in ("bot", "context"):
+                        continue
+                    walk(v, depth + 1, seen)
+
+        try:
+            walk(event)
+        except Exception as e:
+            logger.debug(f"[link_preview] 暴力扫描失败: {e}")
+        return found[:3]
+
+    def _dump_raw(self, event) -> None:
+        """把原始事件的结构打出来，供排查。内容截断，不刷屏。"""
+        obj = getattr(event, "message_obj", None)
+        raw = getattr(obj, "raw_message", None) if obj else None
+        if raw is None:
+            logger.info("[link_preview] DUMP raw_message=None")
+            return
+        try:
+            if hasattr(raw, "items"):
+                snapshot = {k: raw[k] for k in list(raw.keys())[:20]}
+            elif hasattr(raw, "__dict__"):
+                snapshot = {k: v for k, v in raw.__dict__.items() if not k.startswith("_")}
+            else:
+                snapshot = raw
+            text = repr(snapshot)
+        except Exception as e:
+            text = f"<dump 失败: {e}>"
+        logger.info(f"[link_preview] DUMP raw_message={text[:1800]}")
+
     def _log_segments(self, event) -> None:
         """把消息链和原始事件的段类型打到日志，排查"为什么没解析"用。"""
         obj = getattr(event, "message_obj", None)
@@ -875,6 +968,13 @@ class LinkPreview(Star):
             allowed.append(u)
 
         # 消息链里没有（xml 段被上游丢了），回到原始事件再扫一遍
+        # 最后一道：整个事件摊平暴力扫
+        if not allowed:
+            for u in self._scan_everything(event):
+                if self._is_content_url(u) and u not in allowed:
+                    allowed.append(u)
+                    logger.info(f"[link_preview] 暴力扫描兜底命中: {u}")
+
         if not allowed:
             for u in self._scan_raw_message(event):
                 host = urlparse(u).hostname or ""
@@ -971,6 +1071,7 @@ class LinkPreview(Star):
             # 排查用：把这条消息的段类型摊开，一眼看出卡片是以什么形式到的
             if conf.get("debug_segments"):
                 self._log_segments(event)
+                self._dump_raw(event)
             return
 
         sid = event.unified_msg_origin
