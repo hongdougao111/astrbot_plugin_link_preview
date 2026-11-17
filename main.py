@@ -139,6 +139,20 @@ class LinkPreview(Star):
         self._cache_dir: Path | None = None
         self._schema_defaults = self._load_schema_defaults()
         self._state: dict | None = None  # 会话开关，懒加载
+        # 启动就打版本，排查时一眼看出装的是不是新版、插件有没有加载
+        logger.info(
+            f"[link_preview] v{self._read_version()} 已加载 | 卡片解析=json/share/xml/暴力扫描"
+        )
+
+    @staticmethod
+    def _read_version() -> str:
+        try:
+            for line in (Path(__file__).parent / "metadata.yaml").read_text("utf-8").splitlines():
+                if line.startswith("version:"):
+                    return line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+        return "?"
 
     # ---------- 配置 ----------
 
@@ -690,29 +704,41 @@ class LinkPreview(Star):
 
         found: list[str] = []
 
+        def push(v: str):
+            """收一条候选。放宽：只要串里含 http 就捞出来，转义也还原。"""
+            v = v.strip().replace("\\/", "/")
+            v = html_lib.unescape(v)
+            if not v.startswith("http"):
+                return
+            v = v.rstrip(TRAILING + "\\")
+            if v not in found and self._is_content_url(v):
+                found.append(v)
+
         def walk(node, depth=0):
-            if depth > 6 or len(found) >= 3:
+            if depth > 8 or len(found) >= 5:
                 return
             if isinstance(node, dict):
                 for key, value in node.items():
-                    if key in self._CARD_URL_KEYS and isinstance(value, str):
-                        v = value.strip()
-                        if v.startswith("http") and v not in found:
-                            found.append(v)
+                    if isinstance(value, str):
+                        # 先按已知键名优先收，其余靠内容判断
+                        if key in self._CARD_URL_KEYS or "http" in value:
+                            push(value)
                     else:
                         walk(value, depth + 1)
             elif isinstance(node, list):
                 for item in node:
                     walk(item, depth + 1)
-            elif isinstance(node, str) and node.startswith("http") and len(node) < 300:
-                if node not in found and "qq.com" not in node:
-                    found.append(node)
+            elif isinstance(node, str):
+                push(node)
 
         try:
             walk(data)
         except Exception as e:
             logger.debug(f"[link_preview] 解析卡片失败: {e}")
-        return found
+
+        # 内容页优先：卡片里通常同时有封面图和跳转链接，封面不要
+        content = [u for u in found if "http" in u and not self._is_image_url(u)]
+        return content or found
 
     # XML 卡片（Lagrange / go-cqhttp 老版下发形如
     # <msg serviceID="1" url="https://..." brief="...">...</msg>）
@@ -794,6 +820,12 @@ class LinkPreview(Star):
         "byteimg.com", "douyinpic.com", "bilivideo.com", "hdslb.com",
     )
 
+    @staticmethod
+    def _is_image_url(u: str) -> bool:
+        return (urlparse(u).path or "").lower().endswith(
+            (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico")
+        )
+
     def _is_content_url(self, u: str) -> bool:
         """过滤掉头像、CDN、QQ 内部链接这类噪音。"""
         try:
@@ -805,8 +837,12 @@ class LinkPreview(Star):
         for noise in self._NOISE_HOSTS:
             if host == noise or host.endswith("." + noise):
                 return False
-        # 太短的路径基本是资源文件，不是内容页
-        return len(u) < 500
+        # 图片 / 音视频直链是卡片里的封面，不是内容页
+        path = (urlparse(u).path or "").lower()
+        if path.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico", ".mp4", ".mp3")):
+            return False
+        # 太长的基本是带一串参数的资源地址
+        return len(u) < 400
 
     def _scan_everything(self, event, depth_limit: int = 8) -> list[str]:
         """最后一道兜底：把整个事件对象递归摊平，暴力找 http 链接。
@@ -879,6 +915,57 @@ class LinkPreview(Star):
         except Exception as e:
             text = f"<dump 失败: {e}>"
         logger.info(f"[link_preview] DUMP raw_message={text[:1800]}")
+
+    def _describe_event(self, event) -> str:
+        """把这条消息的结构压成几行文字，直接回给用户看，不用翻日志。"""
+        lines = []
+        obj = getattr(event, "message_obj", None)
+        chain = getattr(obj, "message", None) if obj else None
+        kinds = []
+        for comp in (chain or []):
+            try:
+                t = getattr(comp, "type", "")
+                name = str(getattr(t, "value", t))
+                extra = ""
+                data = getattr(comp, "data", None)
+                if isinstance(data, dict):
+                    extra = f" keys={list(data.keys())[:6]}"
+                elif isinstance(data, str):
+                    extra = f" len={len(data)}"
+                kinds.append(f"{name}{extra}")
+            except Exception:
+                kinds.append("?")
+        lines.append(f"消息链: {kinds or '空'}")
+
+        raw = getattr(obj, "raw_message", None) if obj else None
+        segs = getattr(raw, "message", None) if raw is not None else None
+        if isinstance(segs, dict):
+            segs = segs.get("message")
+        if isinstance(segs, list):
+            raw_kinds = []
+            for seg in segs:
+                try:
+                    if isinstance(seg, dict):
+                        raw_kinds.append(f"{seg.get('type')}({list((seg.get('data') or {}).keys())[:5]})")
+                    else:
+                        raw_kinds.append(type(seg).__name__)
+                except Exception:
+                    raw_kinds.append("?")
+            lines.append(f"raw 段: {raw_kinds}")
+        elif isinstance(segs, str):
+            lines.append(f"raw 段: 字符串 {len(segs)} 字")
+        else:
+            lines.append("raw 段: 拿不到")
+
+        # 各种路子捞到的链接
+        text_hit = self._take_urls(event.message_str or "", {"max_links": 5, "whitelist": [], "blacklist": []})
+        lines.append(f"文本里的链接: {text_hit or '无'}")
+        card_hit = self._take_card_urls(event, {"max_links": 5, "whitelist": [], "blacklist": []})
+        lines.append(f"卡片提取: {card_hit or '无'}")
+        brute = self._scan_everything(event)
+        lines.append(f"暴力扫描: {brute or '无'}")
+
+        return "\n".join(lines)
 
     def _log_segments(self, event) -> None:
         """把消息链和原始事件的段类型打到日志，排查"为什么没解析"用。"""
@@ -1237,6 +1324,11 @@ class LinkPreview(Star):
 
     # ---------- 指令 ----------
 
+    @filter.command("链接诊断")
+    async def diag_cmd(self, event: AstrMessageEvent):
+        """排查：把当前这条消息的结构摊开给你看。用法：引用卡片消息发 /链接诊断"""
+        yield event.plain_result(self._describe_event(event))
+
     @filter.command("解析")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def toggle_cmd(self, event: AstrMessageEvent, action: str = ""):
@@ -1251,6 +1343,10 @@ class LinkPreview(Star):
         if act in ("关", "off", "0", "关闭", "关掉"):
             self._set_on(sid, False)
             yield event.plain_result("关了这个会话的自动解析。要开回来发 /解析 开。")
+            return
+
+        if act in ("诊断", "diag", "debug", "查"):
+            yield event.plain_result(self._describe_event(event))
             return
 
         here = "开" if self._is_on(sid) else "关"
