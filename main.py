@@ -1055,6 +1055,21 @@ class LinkPreview(Star):
             allowed.append(u)
 
         # 消息链里没有（xml 段被上游丢了），回到原始事件再扫一遍
+        # 有卡片段但一条链接都没挖到 —— 这最可疑，直接把卡片内容打出来，
+        # 不用等用户去发诊断指令
+        if not allowed and chain:
+            for comp in chain:
+                try:
+                    t = getattr(comp, "type", "")
+                    name = str(getattr(t, "value", t)).lower()
+                    if name in ("json", "share"):
+                        data = getattr(comp, "data", None)
+                        logger.warning(
+                            f"[link_preview] 收到 {name} 卡片但没挖到链接，内容={repr(data)[:1200]}"
+                        )
+                except Exception:
+                    continue
+
         # 最后一道：整个事件摊平暴力扫
         if not allowed:
             for u in self._scan_everything(event):
@@ -1324,7 +1339,7 @@ class LinkPreview(Star):
 
     # ---------- 指令 ----------
 
-    @filter.command("链接诊断")
+    @filter.command("链接诊断", alias={"链路诊断", "诊断链接", "卡片诊断"})
     async def diag_cmd(self, event: AstrMessageEvent):
         """排查：把当前这条消息的结构摊开给你看。用法：引用卡片消息发 /链接诊断"""
         yield event.plain_result(self._describe_event(event))
