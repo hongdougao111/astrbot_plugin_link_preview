@@ -1170,10 +1170,17 @@ class LinkPreview(Star):
         if not urls and conf.get("parse_cards", True):
             urls = self._take_card_urls(event, conf)
         if not urls:
-            # 排查用：把这条消息的段类型摊开，一眼看出卡片是以什么形式到的
+            # 排查用：debug_segments 开着时把结构直接回在群里，
+            # 不依赖日志（插件 logger 可能被路由到单独的文件里）
             if conf.get("debug_segments"):
                 self._log_segments(event)
                 self._dump_raw(event)
+                try:
+                    yield event.plain_result(
+                        "【链接解析·诊断】没找到链接\n" + self._describe_event(event)
+                    )
+                except Exception:
+                    pass
             return
 
         sid = event.unified_msg_origin
@@ -1366,6 +1373,13 @@ class LinkPreview(Star):
 
         here = "开" if self._is_on(sid) else "关"
         conf = self._conf()
+        if act in ("版本", "version", "v"):
+            yield event.plain_result(
+                f"链接解析 v{self._read_version()}\n"
+                f"卡片解析: json / share / xml / 暴力扫描\n"
+                f"配置项 {len(conf)} 个"
+            )
+            return
         cd = int(conf.get("cooldown") or 0)
         if cd <= 0:
             wait = "没设冷却，随时能发"

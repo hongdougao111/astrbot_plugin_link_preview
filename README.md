@@ -407,3 +407,20 @@ wording='message element "video" must be the only segment in a message'
 
 配置里 `video_send_mode` 可以切成 `file`，改成发群文件，
 某些协议端更稳，但群里会显示成附件而不是能直接播放的视频。
+
+### 日志里看不到 [link_preview]？
+
+AstrBot 可以在插件配置里单独设置每个插件的日志等级，日志也可能被路由到单独的文件。
+所以别只盯着主日志——直接问：
+
+```
+/解析 版本
+```
+
+```
+链接解析 v1.1.8
+卡片解析: json / share / xml / 暴力扫描
+配置项 25 个
+```
+
+有回应 = 插件加载正常。再打开 `debug_segments`，发一次卡片，诊断会直接回在群里。
