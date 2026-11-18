@@ -285,6 +285,50 @@ _lp.msg = "https://example.com/a"
 check("循环引用不卡死", _p5._scan_everything(_mkraw(message_obj=_mkraw(message=[], raw_message=_lp))),
       ["https://example.com/a"])
 
+# 8.9 卡片缓存（卡片和诊断指令是两条消息）
+_p6 = plugin.LinkPreview.__new__(plugin.LinkPreview)
+_p6._last_at = {}; _p6._hint_at = {}; _p6._recent_card = {}
+_SID = "aiocqhttp:GroupMessage:9"
+_card_obj = {
+    "app": "com.tencent.miniapp_01",
+    "prompt": "[QQ小程序]哔哩哔哩",
+    "meta": {"detail_1": {"qqdocurl": _BILI, "title": "哔哩哔哩"}},
+}
+
+
+class _C:
+    def __init__(self, t, **kw):
+        self.type = t
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+_ev_card = types.SimpleNamespace(
+    message_str="", unified_msg_origin=_SID,
+    message_obj=types.SimpleNamespace(message=[_C("Json", data=_card_obj)], raw_message=None))
+_p6._remember_card(_ev_card)
+check("卡片进缓存", len(_p6._recent_card.get(_SID, {}).get("cards", [])), 1)
+
+_ev_plain = types.SimpleNamespace(
+    message_str="/链接诊断", unified_msg_origin=_SID,
+    message_obj=types.SimpleNamespace(message=[_C("Plain", text="/链接诊断")], raw_message=None))
+_desc = _p6._describe_event(_ev_plain)
+check("诊断能看到缓存的卡片", _BILI in _desc, True)
+check("诊断标明是缓存", "最近一条卡片" in _desc, True)
+
+# 引用消息里的卡片
+_ev_reply = types.SimpleNamespace(
+    message_str="/链接诊断", unified_msg_origin=_SID,
+    message_obj=types.SimpleNamespace(
+        message=[_C("Reply", id="1", chain=[_C("Json", data=_card_obj)])], raw_message=None))
+check("引用消息里的卡片", _BILI in _p6._describe_event(_ev_reply), True)
+
+# 没收到过卡片的群
+_ev_empty = types.SimpleNamespace(
+    message_str="/链接诊断", unified_msg_origin="aiocqhttp:GroupMessage:other",
+    message_obj=types.SimpleNamespace(message=[_C("Plain", text="x")], raw_message=None))
+check("没卡片时如实说", "还没收到过卡片" in _p6._describe_event(_ev_empty), True)
+
 # 9. 消息分段：video 必须独占一条（OneBot retcode 1400 的约束）
 async def _seg_check():
     conf = {"download_video": True, "timeout": 25, "max_video_mb": 50, "video_quality": 32,

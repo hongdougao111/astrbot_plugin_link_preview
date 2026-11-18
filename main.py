@@ -139,6 +139,8 @@ class LinkPreview(Star):
         self._cache_dir: Path | None = None
         self._schema_defaults = self._load_schema_defaults()
         self._state: dict | None = None  # 会话开关，懒加载
+        # 会话 -> 最近的卡片消息（诊断时用，因为卡片和诊断指令是两条消息）
+        self._recent_card: dict[str, dict] = {}
         # 启动就打版本，排查时一眼看出装的是不是新版、插件有没有加载
         logger.info(
             f"[link_preview] v{self._read_version()} 已加载 | 卡片解析=json/share/xml/暴力扫描"
@@ -916,6 +918,86 @@ class LinkPreview(Star):
             text = f"<dump 失败: {e}>"
         logger.info(f"[link_preview] DUMP raw_message={text[:1800]}")
 
+    def _remember_card(self, event) -> None:
+        """把这条消息里的 json/share 段记下来，供 /链接诊断 查。
+
+        卡片和诊断指令是两条不同的消息，诊断时查的往往不是卡片本身。
+        所以见到卡片就按会话存一份，诊断时回读。
+        """
+        obj = getattr(event, "message_obj", None)
+        chain = getattr(obj, "message", None) if obj else None
+        if not chain:
+            return
+        cards = []
+        for comp in chain:
+            try:
+                t = getattr(comp, "type", "")
+                name = str(getattr(t, "value", t)).lower()
+                if name in ("json", "share", "xml"):
+                    cards.append(
+                        {
+                            "kind": name,
+                            "data": getattr(comp, "data", None),
+                            "url": getattr(comp, "url", None),
+                        }
+                    )
+            except Exception:
+                continue
+        if not cards:
+            return
+        sid = getattr(event, "unified_msg_origin", "") or ""
+        self._recent_card[sid] = {"at": time.time(), "cards": cards}
+        # 顺手清掉太旧的，避免长期运行吃内存
+        if len(self._recent_card) > 512:
+            cutoff = time.time() - 1800
+            for k in [k for k, v in self._recent_card.items() if v["at"] < cutoff]:
+                self._recent_card.pop(k, None)
+
+    def _card_from_reply(self, event) -> list:
+        """引用消息里带的卡片。Reply 组件的 chain 就是被引用消息的段列表。"""
+        obj = getattr(event, "message_obj", None)
+        chain = getattr(obj, "message", None) if obj else None
+        out = []
+        for comp in (chain or []):
+            try:
+                t = getattr(comp, "type", "")
+                if str(getattr(t, "value", t)).lower() != "reply":
+                    continue
+                inner = getattr(comp, "chain", None) or []
+                for sub in inner:
+                    st = getattr(sub, "type", "")
+                    name = str(getattr(st, "value", st)).lower()
+                    if name in ("json", "share", "xml"):
+                        out.append(
+                            {
+                                "kind": name,
+                                "data": getattr(sub, "data", None),
+                                "url": getattr(sub, "url", None),
+                            }
+                        )
+            except Exception:
+                continue
+        return out
+
+    def _describe_cards(self, cards: list, conf: dict) -> list[str]:
+        """把几条卡片压成可读的行。"""
+        lines = []
+        for i, card in enumerate(cards, 1):
+            kind = card.get("kind")
+            data = card.get("data")
+            if isinstance(data, str):
+                preview = data[:600]
+            else:
+                preview = repr(data)[:600]
+            lines.append(f"卡片{i}[{kind}]: {preview}")
+            urls = []
+            if kind == "share" and card.get("url"):
+                urls = [str(card["url"])]
+            elif isinstance(data, (dict, str)):
+                urls = self._urls_from_card(data)
+            lines.append(f"卡片{i} 提取: {urls or '无'}")
+        return lines
+
     def _describe_event(self, event) -> str:
         """把这条消息的结构压成几行文字，直接回给用户看，不用翻日志。"""
         lines = []
@@ -964,6 +1046,22 @@ class LinkPreview(Star):
         lines.append(f"卡片提取: {card_hit or '无'}")
         brute = self._scan_everything(event)
         lines.append(f"暴力扫描: {brute or '无'}")
+
+        # 卡片和诊断指令是两条消息，所以两种来源都查：引用消息 + 最近一条卡片
+        conf = {"max_links": 5, "whitelist": [], "blacklist": []}
+        replied = self._card_from_reply(event)
+        if replied:
+            lines.append("--- 引用消息里的卡片 ---")
+            lines.extend(self._describe_cards(replied, conf))
+        else:
+            sid = getattr(event, "unified_msg_origin", "") or ""
+            cached = self._recent_card.get(sid)
+            if cached:
+                ago = int(time.time() - cached["at"])
+                lines.append(f"--- 本群最近一条卡片（{ago} 秒前）---")
+                lines.extend(self._describe_cards(cached["cards"], conf))
+            else:
+                lines.append("--- 本群还没收到过卡片 ---")
 
         return "\n".join(lines)
 
@@ -1154,6 +1252,8 @@ class LinkPreview(Star):
     async def on_any_message(self, event: AstrMessageEvent):
         """自动解析：注意不要用 filter.regex，避免和其他插件的正则抢消息。"""
         conf = self._conf()
+        # 先记卡片再判断开关：诊断时可能需要看关着的群的卡片
+        self._remember_card(event)
         if not self._is_on(event.unified_msg_origin):
             return
 
