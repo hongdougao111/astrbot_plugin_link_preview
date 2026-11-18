@@ -107,6 +107,31 @@ class _MetaParser(HTMLParser):
                 self.title = text
 
 
+# B 站相关的域名后缀。卡片里常混着预览图 CDN，白名单优先能少误判。
+_BILI_DOMAINS = (
+    "bilibili.com",
+    "b23.tv",
+    "bili2233.cn",
+    "bili22.cn",
+    "bili23.cn",
+    "bili33.cn",
+    "hdslb.com",
+    "bilivideo.com",
+    "bilivideo.cn",
+    "bilivideo.net",
+)
+
+
+def _is_bili_url(u: str) -> bool:
+    try:
+        host = (urlparse(u).hostname or "").lower().rstrip(".")
+    except Exception:
+        return False
+    if not host:
+        return False
+    return any(host == d or host.endswith("." + d) for d in _BILI_DOMAINS)
+
+
 def _pick(meta: dict[str, str], *keys: str) -> str:
     for k in keys:
         v = meta.get(k)
@@ -845,6 +870,10 @@ class LinkPreview(Star):
         "qpic.cn", "qlogo.cn", "qq.com", "gtimg.cn", "qcloud.com",
         "weixin.qq.com", "tenpay.com", "qidian.com", "myqcloud.com",
         "byteimg.com", "douyinpic.com", "bilivideo.com", "hdslb.com",
+        # 注意：host.endswith(".qq.com") 对 multimedia.nt.qq.com.cn 是假，
+        # 它实际以 qq.com.cn 结尾，必须单独列出来
+        "qq.com.cn",
+        "servicewechat.com", "weixinbridge.com",
     )
 
     @staticmethod
@@ -867,6 +896,9 @@ class LinkPreview(Star):
         # 图片 / 音视频直链是卡片里的封面，不是内容页
         path = (urlparse(u).path or "").lower()
         if path.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".ico", ".mp4", ".mp3")):
+            return False
+        # QQ 的文件下载接口：/download?fileid=... 或 /download?appid=... 是文件流，不是内容页
+        if "download" in path and ("fileid=" in u or "appid=" in u or "rkey=" in u):
             return False
         # 太长的基本是带一串参数的资源地址
         return len(u) < 400
@@ -922,6 +954,11 @@ class LinkPreview(Star):
             walk(event)
         except Exception as e:
             logger.debug(f"[link_preview] 暴力扫描失败: {e}")
+
+        # 有 B 站链接就别再往外丢别的（卡片里的预览图、CDN 一律不算内容）
+        bili = [u for u in found if _is_bili_url(u)]
+        if bili:
+            return bili[:3]
         return found[:3]
 
     def _dump_raw(self, event) -> None:

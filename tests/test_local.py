@@ -359,6 +359,24 @@ check("B站视频仍走视频解析",
 check("专栏不触发下载", resolvers.match_bilibili("https://www.bilibili.com/read/cv2"), True)
 check("番剧不触发下载", resolvers.match_bilibili("https://www.bilibili.com/bangumi/play/ss1"), True)
 
+# 8.12 噪音过滤：QQ 的 CDN / 文件下载接口不能当内容页
+_p8 = plugin.LinkPreview.__new__(plugin.LinkPreview)
+_p8._last_at = {}
+_CDN = ("https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=EhQ0rvkf"
+        "&spec=0&rkey=CAQSMNejTnKqyYsD0Ti9uHnPozT")
+check("qq.com.cn 不算内容", _p8._is_content_url(_CDN), False)
+check("带 fileid 的下载接口不算内容",
+      _p8._is_content_url("https://x.qq.com/download?fileid=abc"), False)
+check("B站仍算内容", _p8._is_content_url(_BILI), True)
+check("B站域名识别", plugin._is_bili_url(_BILI), True)
+check("CDN 不是 B站域名", plugin._is_bili_url(_CDN), False)
+
+# 卡片里混着 CDN 和 B站链接，只取 B站
+check("卡片优先取 B站", _p8._urls_from_card(
+    {"meta": {"detail_1": {"qqdocurl": _BILI, "preview": _CDN}}}), [_BILI])
+# 只有 CDN 的卡片不返回任何东西
+check("纯 CDN 卡片返回空", _p8._urls_from_card({"meta": {"detail_1": {"preview": _CDN}}}), [])
+
 # 9. 消息分段：video 必须独占一条（OneBot retcode 1400 的约束）
 async def _seg_check():
     conf = {"download_video": True, "timeout": 25, "max_video_mb": 50, "video_quality": 32,

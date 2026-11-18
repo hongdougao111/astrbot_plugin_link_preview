@@ -22,7 +22,7 @@ desc: |
   点歌：/点 歌名 或 /点 歌手，搜到能播的直接发语音。
 
   指令只有两个（管理员）：/解析 看状态，/解析 开|关 切换；点歌是 /点。
-version: 1.3.0
+version: 1.3.1
 author: hongdougao111
 repo: https://github.com/hongdougao111/astrbot_plugin_link_preview
 astrbot_version: ">=4.9.2"

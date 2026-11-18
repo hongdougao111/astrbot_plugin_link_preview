@@ -375,6 +375,24 @@ zhihu   403  application/json
 
 **B 站视频下载只对 `/video/BVxxx` 生效**，专栏和番剧不会被误抓去下载。
 
+
+### 噪音过滤的两层
+
+1. **域名黑名单**（`_NOISE_HOSTS`）：QQ/CDN/头像/图床
+2. **B 站白名单优先**（`_is_bili_url`）：卡片里只要能找到 B 站链接，就别再往外丢别的
+
+第 2 层是防这种：卡片里同时有封面图 `multimedia.nt.qq.com.cn/download?...`
+和真正的视频链接，兜底扫描会把两个都捞上来。现在有 B 站链接就只返回它。
+
+黑名单里为什么单列 `qq.com.cn`：
+
+```python
+host.endswith(".qq.com")   # multimedia.nt.qq.com.cn → False
+host.endswith(".qq.com.cn") # → True
+```
+
+差一层后缀，`qq.com` 那条规则罩不住它。
+
 ## 自测
 
 不用装 AstrBot：
