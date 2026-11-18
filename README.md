@@ -324,6 +324,23 @@ raw 段: 拿不到
 
 后面两行才是关键 —— 它们显示卡片里到底有什么、我们的提取器能不能认。
 
+
+## 卡片解析的字段覆盖
+
+参照 [astrbot_plugin_multi_parser](https://github.com/Qfxaile/astrbot_plugin_multi_parser) 的
+`ShareCardExtractor`，QQ 卡片的链接在这几个位置：
+
+| 分支 | 字段 | 用在哪 |
+| --- | --- | --- |
+| `meta.detail_1` | `qqdocurl` | 小程序卡片，最常见 |
+| `meta.news` | `jumpUrl` | 图文分享 |
+| `meta.miniapp` | `pcJumpUrl` | 新版小程序（PC 端） |
+| `meta.miniapp` | `legacyUrl` | 新版小程序（旧字段） |
+| `meta.feed` | `jumpUrl` | 腾讯频道帖子 |
+
+另外 `raw_message.message` 里的段可能是 **AstrBot 组件对象**而不是 dict。
+v1.2.0 起两种都读，`Json` 组件的 `data` 会被直接拿去当卡片解析。
+
 ## 自测
 
 不用装 AstrBot：

@@ -329,6 +329,25 @@ _ev_empty = types.SimpleNamespace(
     message_obj=types.SimpleNamespace(message=[_C("Plain", text="x")], raw_message=None))
 check("没卡片时如实说", "还没收到过卡片" in _p6._describe_event(_ev_empty), True)
 
+# 8.10 卡片五种分支（对齐 astrbot_plugin_multi_parser 的 ShareCardExtractor）
+_p7 = plugin.LinkPreview.__new__(plugin.LinkPreview)
+_p7._last_at = {}
+for _name, _card in {
+    "detail_1.qqdocurl": {"meta": {"detail_1": {"qqdocurl": _BILI}}},
+    "news.jumpUrl": {"meta": {"news": {"jumpUrl": _BILI}}},
+    "miniapp.pcJumpUrl": {"meta": {"miniapp": {"pcJumpUrl": _BILI}}},
+    "miniapp.legacyUrl": {"meta": {"miniapp": {"legacyUrl": _BILI}}},
+    "feed.jumpUrl": {"meta": {"feed": {"jumpUrl": _BILI}}},
+}.items():
+    check(f"卡片分支 {_name}", _p7._urls_from_card(_card), [_BILI])
+
+# raw_message 的 message 段是组件对象（不是 dict）—— 这条以前是漏的
+_comp_card = {"meta": {"detail_1": {"qqdocurl": _BILI}}}
+_ev_obj = types.SimpleNamespace(
+    message_obj=types.SimpleNamespace(
+        message=[], raw_message=types.SimpleNamespace(message=[_C("Json", data=_comp_card)])))
+check("raw 段是组件对象", _p7._scan_raw_message(_ev_obj), [_BILI])
+
 # 9. 消息分段：video 必须独占一条（OneBot retcode 1400 的约束）
 async def _seg_check():
     conf = {"download_video": True, "timeout": 25, "max_video_mb": 50, "video_quality": 32,

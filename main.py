@@ -682,11 +682,17 @@ class LinkPreview(Star):
 
     # ---------- 小程序 / 卡片 ----------
 
-    # QQ 小程序卡片走 json 消息段，里面的链接藏在几层 meta 里。
-    # 常见的两种结构：
-    #   com.tencent.miniapp_01 -> meta.detail_1.qqdocurl
-    #   com.tencent.structmsg  -> meta.news.jumpUrl
-    _CARD_URL_KEYS = ("qqdocurl", "jumpUrl", "jump_url", "url")
+    # QQ 卡片走 json 消息段，链接藏在 meta 的几种分支里。
+    # 结构参考 astrbot_plugin_multi_parser 的 ShareCardExtractor：
+    #   detail_1.qqdocurl        小程序卡片（最常见）
+    #   news.jumpUrl             图文分享
+    #   miniapp.pcJumpUrl        新版小程序（PC 端）
+    #   miniapp.legacyUrl        新版小程序（旧字段）
+    #   feed.jumpUrl             腾讯频道帖子
+    _CARD_URL_KEYS = (
+        "qqdocurl", "jumpUrl", "jump_url", "url",
+        "pcJumpUrl", "pcjumpurl", "legacyUrl", "legacyurl",
+    )
 
     def _urls_from_card(self, data) -> list[str]:
         """从卡片 JSON 里挖出 URL。结构不固定，所以递归找。"""
@@ -799,13 +805,32 @@ class LinkPreview(Star):
         if isinstance(segments, list):
             for seg in segments:
                 try:
-                    data = seg.get("data") if isinstance(seg, dict) else getattr(seg, "data", None)
+                    if isinstance(seg, dict):
+                        seg_type = str(seg.get("type") or "").lower()
+                        data = seg.get("data")
+                    else:
+                        # raw 段可能已经是 AstrBot 的组件对象（Json / Share ...）
+                        t = getattr(seg, "type", "")
+                        seg_type = str(getattr(t, "value", t)).lower()
+                        data = getattr(seg, "data", None)
+
                     if not isinstance(data, dict):
                         continue
-                    for key in ("xml", "json", "content"):
+
+                    # json / share 段的 data 本身就是卡片内容，直接当卡片解析
+                    if seg_type in ("json", "share"):
+                        for u in self._urls_from_card(data):
+                            if u not in out:
+                                out.append(u)
+
+                    # 有的实现把卡片塞在 xml / json / content 字符串字段里
+                    for key in ("xml", "json", "content", "data"):
                         val = data.get(key)
                         if isinstance(val, str) and val:
                             take(val)
+                            for u in self._urls_from_card(val):
+                                if u not in out:
+                                    out.append(u)
                 except Exception:
                     continue
         elif isinstance(segments, str):
