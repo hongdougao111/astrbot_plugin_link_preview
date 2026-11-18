@@ -341,6 +341,40 @@ raw 段: 拿不到
 另外 `raw_message.message` 里的段可能是 **AstrBot 组件对象**而不是 dict。
 v1.2.0 起两种都读，`Json` 组件的 `data` 会被直接拿去当卡片解析。
 
+
+## 新增平台
+
+| 平台 | 识别 | 数据来源 |
+| --- | --- | --- |
+| GitHub 仓库 | `github.com/owner/repo` | `api.github.com/repos/...` |
+| GitHub 用户 | `github.com/username` | `api.github.com/users/...` |
+| B 站专栏 | `bilibili.com/read/cv<id>` | `x/article/viewinfo` |
+| B 站番剧 | `bilibili.com/bangumi/play/ss<id>` | `pgc/view/web/season` |
+
+实测输出：
+
+```
+GitHub   AstrBotDevs/AstrBot · Python · ★ 4.7万 · fork 3613 · AGPL-3.0
+GitHub   Linus Torvalds · 33.2万 followers · 12 repos
+专栏      专栏行为准则 · 作者：专栏小天使 · 123.6万阅读
+番剧      凡人修仙传 · 评分 9.7 · 共 317 话
+```
+
+### 没做的三个：贴吧 / 微博 / 知乎
+
+都实测过，全被风控挡住：
+
+```
+tieba   403  <title>百度安全验证</title>
+weibo   432 / ok=-100（需要登录态）
+zhihu   403  application/json
+小红书   短链跳首页，需要登录 Cookie
+```
+
+这些做进去只会得到「解析失败」，不如不做。要支持得配 Cookie，那是另一个工作量。
+
+**B 站视频下载只对 `/video/BVxxx` 生效**，专栏和番剧不会被误抓去下载。
+
 ## 自测
 
 不用装 AstrBot：

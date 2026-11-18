@@ -387,6 +387,18 @@ RESOLVERS: list[tuple[Callable[[str], bool], Callable[..., Awaitable[Preview | N
     (_match_netease, resolve_netease),
 ]
 
+# 后加的平台单独一个文件，避免主文件继续膨胀
+try:
+    from .multi_platform import PLATFORM_RESOLVERS as _EXTRA_RESOLVERS
+except ImportError:  # 被当独立文件加载时
+    try:
+        from multi_platform import PLATFORM_RESOLVERS as _EXTRA_RESOLVERS
+    except ImportError:
+        _EXTRA_RESOLVERS = []
+
+# 顺序有讲究：番剧/专栏比视频更具体，必须排在 _match_bilibili 前面
+RESOLVERS = list(_EXTRA_RESOLVERS) + RESOLVERS
+
 # 这些标题说明抓到的是风控中间页，不是真内容，不能当解析结果发出去
 BLOCKED_TITLES = ("验证码中间页", "安全验证", "环境异常", "Please verify", "Just a moment")
 

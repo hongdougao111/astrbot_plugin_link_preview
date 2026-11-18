@@ -133,7 +133,7 @@ check("B站直链", resolvers.pick("https://www.bilibili.com/video/BV1GJ411x7h7"
 check("B站短链", resolvers.pick("https://b23.tv/abc").__name__, "resolve_bilibili")
 check("网易云", resolvers.pick("https://music.163.com/#/song?id=1").__name__, "resolve_netease")
 check("抖音已移除", resolvers.pick("https://v.douyin.com/x/"), None)
-check("无关域名回落", resolvers.pick("https://github.com/a/b"), None)
+check("无关域名回落", resolvers.pick("https://example.org/a/b"), None)
 check("伪装域名不误判", resolvers.pick("https://fakebilibili.com/x"), None)
 
 # 6. B站 ID 抽取
@@ -347,6 +347,17 @@ _ev_obj = types.SimpleNamespace(
     message_obj=types.SimpleNamespace(
         message=[], raw_message=types.SimpleNamespace(message=[_C("Json", data=_comp_card)])))
 check("raw 段是组件对象", _p7._scan_raw_message(_ev_obj), [_BILI])
+
+# 8.11 新增平台：GitHub / B站专栏 / B站番剧
+check("GitHub 仓库", resolvers.pick("https://github.com/AstrBotDevs/AstrBot").__name__, "resolve_github")
+check("GitHub 用户页", resolvers.pick("https://github.com/torvalds").__name__, "resolve_github")
+check("B站专栏", resolvers.pick("https://www.bilibili.com/read/cv2").__name__, "resolve_bili_article")
+check("B站番剧 ss", resolvers.pick("https://www.bilibili.com/bangumi/play/ss28747").__name__, "resolve_bili_bangumi")
+check("B站视频仍走视频解析",
+      resolvers.pick("https://www.bilibili.com/video/BV1GJ411x7h7").__name__, "resolve_bilibili")
+# 专栏/番剧不该触发视频下载
+check("专栏不触发下载", resolvers.match_bilibili("https://www.bilibili.com/read/cv2"), True)
+check("番剧不触发下载", resolvers.match_bilibili("https://www.bilibili.com/bangumi/play/ss1"), True)
 
 # 9. 消息分段：video 必须独占一条（OneBot retcode 1400 的约束）
 async def _seg_check():
