@@ -1,5 +1,22 @@
 # 更新日志
 
+## v1.3.2
+
+插件市场审查通过后按建议做的文档清理，无功能改动。
+
+### 修复
+
+- `INSTALL.md` 第五节还留着已删除的 `douyin_cookie` 配置说明，与 `_conf_schema.json` 不一致。
+  换成当前支持的平台表（B站视频/专栏/番剧、网易云、GitHub、通用网页）
+- `_conf_schema.json` 里 `platform_resolvers` 的 hint 仍写着「抖音」
+
+### 补充
+
+- `insecure_ssl` 在 INSTALL 里加了风险说明：会**完全跳过** HTTPS 证书校验，
+  只在报 `CERTIFICATE_VERIFY_FAILED` 时临时打开，修好证书库后关回去
+- README 开头加合规提示：下载转发请只用于有权限访问的内容，遵守平台条款与著作权规定
+
+
 ## v1.3.1
 
 ### 修复
@@ -38,16 +55,3 @@
 
 - **`raw_message.message` 的段是 AstrBot 组件对象时解析不了**。原来只当 dict 处理，
   `Json` 组件的 `data` 根本没被读到
-- **卡片字段只认 `qqdocurl` / `jumpUrl` / `url`**，漏了 `miniapp.pcJumpUrl`、
-  `miniapp.legacyUrl`、`feed.jumpUrl` 这三种新版卡片的位置
-
-### 变更
-
-- 卡片 URL 字段清单对齐上游：`qqdocurl` / `jumpUrl` / `jump_url` / `url` /
-  `pcJumpUrl` / `legacyUrl`
-- raw 段的 `json` / `share` 段直接交给卡片解析器，不再只当 xml 内容扫
-
-
-## v1.1.9
-
-### 修复

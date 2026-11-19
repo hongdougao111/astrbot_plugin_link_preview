@@ -122,7 +122,7 @@
     "description": "启用平台专用解析",
     "type": "bool",
     "default": true,
-    "hint": "B站、网易云、抖音走专用接口，标题和封面更完整；关掉全部走通用 meta"
+    "hint": "B站、网易云、GitHub 走专用接口，标题和封面更完整；关掉全部走通用 meta"
   },
   "download_video": {
     "description": "B 站链接自动下载视频发出来",

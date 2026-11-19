@@ -75,6 +75,10 @@ WebUI **插件** → 卡片右上角 **配置**，改完保存即时生效，不
 | 解析完别让 AI 接话 | `stop_llm` 打开 |
 
 **证书报错**：日志里出现 `CERTIFICATE_VERIFY_FAILED`，把 `insecure_ssl` 打开。
+
+> `insecure_ssl` 会**完全跳过 HTTPS 证书校验**，等于关掉了中间人攻击的最基本防护。
+> 只在日志明确报 `CERTIFICATE_VERIFY_FAILED`（机器缺 CA 证书库）时才打开，
+> 修好证书库之后请关回去。默认是关的。
 本机就踩到了这个（Windows 缺根证书库），实测打开后 example.com / python.org 都正常。
 
 ## 四、出问题怎么查
@@ -113,16 +117,21 @@ WebUI **日志** 页，或者 AstrBot 控制台。插件只在 `debug` 级别打
 
 ## 五、平台解析
 
-B 站和网易云的链接直接发就行，走官方接口，标题、UP 主、时长、播放量、封面都有。
+这些链接发出来就走专用接口，不用配置、不用登录：
 
-**抖音需要额外配一条 Cookie**，不配就解析不出来（会静默跳过，不影响别的链接）：
+| 平台 | 识别 | 拿到什么 |
+| --- | --- | --- |
+| 哔哩哔哩视频 | `bilibili.com/video/BV...`、`b23.tv` | 标题、UP 主、时长、播放量、封面，可下载视频 |
+| 哔哩哔哩专栏 | `bilibili.com/read/cv...` | 标题、作者、阅读量、封面 |
+| 哔哩哔哩番剧 | `bilibili.com/bangumi/play/ss...` | 标题、评分、话数、简介、封面 |
+| 网易云音乐 | `music.163.com`、`163cn.tv` | 歌名、歌手、专辑、封面 |
+| GitHub | `github.com/owner/repo`、`github.com/用户` | 语言、star、fork、协议、bio |
+| 其他网页 | 任意 http(s) | 标题、来源、简介、封面 |
 
-1. 浏览器打开 douyin.com，登录
-2. F12 → Network 标签 → 随便点一个请求
-3. Request Headers 里找 `Cookie:`，复制冒号后面整段
-4. WebUI 插件配置 → `douyin_cookie` → 粘进去 → 保存
+**点歌**：`/点 歌名` 或 `/点 歌手`，搜到能直接播的发语音。
 
-Cookie 一般能撑几周，失效之后抖音链接又不出了，重新复制一次。
+**没支持的平台**：贴吧、微博、知乎、小红书、抖音。
+这几个都实测过，接口要 Cookie 或登录态，硬做只会得到「解析失败」。
 
 不想让某种链接走专用解析，把 `platform_resolvers` 关掉，全部回落通用 meta。
 
